@@ -32,3 +32,11 @@ Local property matchmaking workspace for Xavier Marks. It imports WhatsApp `clea
 - Select individual result pairs (or unmatched sources) to download a landscape PDF, with the same website logo, Jakarta generation date, and clickable WhatsApp contacts. Maximum 200 report pairs from 50 sources per export.
 - Regression checks: `python3 -m unittest discover -s api -p 'test_*.py'`.
 - Existing local services remain at http://127.0.0.1:9004. The Python/PostgreSQL/Qdrant stack is hosted through Docker Compose; the starter `.openai/hosting.json` has no registered cloud Site.
+
+## Login
+
+Default akun lokal: `admin@autoaudit.id` / `admin`. Atur `XM_ADMIN_EMAIL` dan `XM_ADMIN_PASSWORD` sebelum pertama kali menjalankan instalasi lain. Password disimpan sebagai PBKDF2 hash dan sesi login berlaku tujuh hari.
+
+## Backup lengkap
+
+Gunakan `scripts/backup-data.sh` untuk membuat dump PostgreSQL, snapshot Qdrant `xm_rag`, serta arsip file sumber. Panduan pemulihan tersedia di `docs/BACKUP_RESTORE.md`. Backup data sengaja tidak dilacak Git karena berisi percakapan dan nomor kontak.

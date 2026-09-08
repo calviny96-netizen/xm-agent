@@ -1,17 +1,53 @@
 name: xm
 
 services:
+  postgres:
+    image: postgres:16
+    container_name: postgres-manusai
+    restart: unless-stopped
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-rag
+    restart: unless-stopped
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+
   xm-api:
     build: ./api
     container_name: xm-api
     restart: unless-stopped
     env_file:
-      - ../PostgreSQL/.env
+      - path: ./.env
+        required: false
     environment:
       DATABASE_HOST: postgres-manusai
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
       QDRANT_URL: http://qdrant-rag:6333
       QDRANT_COLLECTION: xm_rag
       UPLOAD_DIR: /data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
@@ -24,12 +60,21 @@ services:
     restart: unless-stopped
     command: ["python", "worker.py"]
     env_file:
-      - ../PostgreSQL/.env
+      - path: ./.env
+        required: false
     environment:
       DATABASE_HOST: postgres-manusai
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
       QDRANT_URL: http://qdrant-rag:6333
       QDRANT_COLLECTION: xm_rag
       UPLOAD_DIR: /data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
