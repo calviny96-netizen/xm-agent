@@ -1,0 +1,17 @@
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY app ./app
+COPY components ./components
+COPY hooks ./hooks
+COPY lib ./lib
+COPY public ./public
+COPY .openai ./.openai
+COPY components.json next.config.ts tsconfig.json vite.config.ts ./
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=build /app/dist/client /usr/share/nginx/html
+RUN chmod -R a+rX /usr/share/nginx/html
+EXPOSE 80

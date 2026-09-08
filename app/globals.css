@@ -1,0 +1,73 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, monospace;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root {
+  --background: oklch(0.985 0.012 255);
+  --foreground: oklch(0.18 0.04 257);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.55 0.22 258);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.96 0.025 255);
+  --secondary-foreground: oklch(0.3 0.1 258);
+  --muted: oklch(0.965 0.012 255);
+  --muted-foreground: oklch(0.53 0.035 257);
+  --accent: oklch(0.94 0.045 250);
+  --accent-foreground: oklch(0.36 0.16 257);
+  --destructive: oklch(0.58 0.23 27);
+  --border: oklch(0.9 0.025 255);
+  --input: oklch(0.9 0.025 255);
+  --ring: oklch(0.64 0.18 253);
+  --radius: 0.75rem;
+}
+
+* { border-color: var(--border); }
+html { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif; background: var(--background); }
+body { margin: 0; min-width: 320px; background: var(--background); color: var(--foreground); }
+button, input { font: inherit; }
+
+.upload-grid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .55;
+  background-image: linear-gradient(rgba(37,99,235,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(37,99,235,.035) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: linear-gradient(110deg, transparent 25%, #000 90%);
+}
+
+::selection { background: rgba(37, 99, 235, .18); }
