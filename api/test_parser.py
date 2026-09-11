@@ -36,7 +36,8 @@ Contact :
         self.assertNotIn('citraland',p.locations)
         self.assertNotIn('citraland',p.normalized_text)
         self.assertIn('regency',p.locations)
-        self.assertIn('national hospital',p.locations)
+        self.assertNotIn('national hospital',p.locations)  # Nearby landmark is not the address.
+        self.assertIn('national hospital',p.normalized_text)
         self.assertIn('custom district',parse_message('Dicari rumah districtx',glossary={'districtx':'custom district'}).locations)
     def test_multiple_contacts(self):
         p=parse_message('Dijual rumah LT 100 Harga 1 M\nHubungi: Agent 0817390035 / 0878 5901 7101')

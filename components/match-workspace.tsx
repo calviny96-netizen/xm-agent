@@ -1,10 +1,11 @@
 'use client';
 
-import { ArrowLeft, ArrowRight, CalendarDays, ChevronDown, Download, ExternalLink, Search } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronDown, Download, ExternalLink, Search } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import DateFilter, { type DateFilterValue } from '@/components/date-filter';
 import { Checkbox } from '@/components/ui/checkbox';
 
 type Direction = 'buyer' | 'property';
@@ -13,8 +14,8 @@ type Row = {
   id: string; raw_text: string; normalized_text: string; contact_name?: string; contact_phone?: string;
   locations: string[]; categories: string[]; land_area_min?: number; land_area_max?: number;
   building_area_min?: number; building_area_max?: number; price_min?: number; price_max?: number;
-  sent_at?: string; hot_count?: number; warm_count?: number; match_count?: number; score?: number;
-  explanation?: string[];
+  sent_at?: string; last_seen_at?: string; price_basis?: string; hot_count?: number; warm_count?: number; match_count?: number; score?: number;
+  explanation?: string[]; duplicate_count?: number;
 };
 type Group = { source: Row; recommendations: Row[] };
 
@@ -31,7 +32,7 @@ async function api(path: string, init?: RequestInit) {
 }
 
 function money(value?: number) {
-  return value ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0, notation: 'compact' }).format(value) : null;
+  return value ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 3, notation: 'compact' }).format(value) : null;
 }
 
 function area(min?: number, max?: number) {
@@ -42,7 +43,12 @@ function area(min?: number, max?: number) {
 
 function relativeDate(value?: string) {
   if (!value) return 'tanggal tidak tersedia';
-  const days = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000));
+  const zoned = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}+07:00`;
+  const timestamp = new Date(zoned).getTime();
+  if (Number.isNaN(timestamp)) return 'tanggal tidak tersedia';
+  const wibDay = (time: number) => Math.floor((time + 7 * 3_600_000) / 86_400_000);
+  const days = wibDay(Date.now()) - wibDay(timestamp);
+  if (days < 0) return 'tanggal mendatang';
   if (days === 0) return 'hari ini';
   if (days === 1) return 'kemarin';
   if (days < 7) return `${days} hari lalu`;
@@ -55,16 +61,31 @@ function structuredSummary(row: Row) {
     row.categories?.join(', '), row.locations?.join(' / '),
     area(row.land_area_min, row.land_area_max) && `LT ${area(row.land_area_min, row.land_area_max)}`,
     area(row.building_area_min, row.building_area_max) && `LB ${area(row.building_area_min, row.building_area_max)}`,
-    money(row.price_max ?? row.price_min),
+    (row.price_max ?? row.price_min) ? `${money(row.price_max ?? row.price_min)}${row.price_basis === 'per_m2' ? '/m²' : row.price_basis === 'per_year' ? '/tahun' : ''}` : null,
   ].filter(Boolean).join(' · ');
 }
 
+function LastSeen({ row }: { row: Row }) {
+  const value = row.last_seen_at || row.sent_at;
+  if (!value) return <p className="mt-1 text-xs text-slate-500">Waktu posting belum tersedia</p>;
+  const zoned = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}+07:00`;
+  const date = new Date(zoned);
+  if (Number.isNaN(date.getTime())) return <p className="mt-1 text-xs text-slate-500">Waktu posting belum tersedia</p>;
+  const full = new Intl.DateTimeFormat('id-ID', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Jakarta' }).format(date);
+  return <p className="mt-1 text-xs text-slate-500">Terakhir diposting <time dateTime={date.toISOString()} title={`${full} WIB`}>{relativeDate(zoned)} · {full} WIB</time></p>;
+}
+
+function DuplicateBadge({ row }: { row: Row }) {
+  return Number(row.duplicate_count) > 1 ? <Badge className="bg-blue-50 text-blue-700">Teks identik · {row.duplicate_count} kemunculan</Badge> : null;
+}
+
 function RawChat({ text }: { text: string }) {
-  return <details className="group/chat mt-2">
+  const [open,setOpen] = useState(false);
+  return <details className="group/chat mt-2" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="flex cursor-pointer list-none items-center gap-1 text-[13px] font-semibold text-blue-700">
       Baca selengkapnya <ChevronDown className="size-3.5 transition group-open/chat:rotate-180" />
     </summary>
-    <p className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-[13px] leading-5 text-slate-600">{text}</p>
+    {open && <p className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-[13px] leading-5 text-slate-600">{text}</p>}
   </details>;
 }
 
@@ -81,8 +102,7 @@ export default function MatchWorkspace() {
   const [statuses, setStatuses] = useState<Status[]>(['hot', 'warm', 'unmatched']);
   const [search, setSearch] = useState('');
   const [phones, setPhones] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const [dates, setDates] = useState<DateFilterValue>({ from: '', to: '', startTime: '00:00', endTime: '23:59' });
   const [rows, setRows] = useState<Row[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -94,6 +114,7 @@ export default function MatchWorkspace() {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState('');
   const preferencesReady = useRef(false);
+  const [preferencesLoaded,setPreferencesLoaded] = useState(false);
   const sourceLabel = direction === 'buyer' ? 'buyer' : 'property';
   const targetLabel = direction === 'buyer' ? 'property' : 'buyer';
 
@@ -104,7 +125,8 @@ export default function MatchWorkspace() {
         setDirection(preferences.direction);
         setStatuses(preferences.statuses.length ? preferences.statuses : ['hot', 'warm', 'unmatched']);
       })
-      .finally(() => { preferencesReady.current = true; });
+      .catch(() => {})
+      .finally(() => { preferencesReady.current = true; setPreferencesLoaded(true); });
   }, []);
 
   useEffect(() => {
@@ -116,18 +138,19 @@ export default function MatchWorkspace() {
   }, [direction, statuses]);
 
   useEffect(() => {
+    if (!preferencesLoaded) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
-      const params = new URLSearchParams({ direction, search, phones, statuses: statuses.join(','), date_from: from, date_to: to, offset: String(offset) });
+      const params = new URLSearchParams({ direction, search, phones, statuses: statuses.join(','), date_from: dates.from, date_to: dates.to, time_from: dates.startTime, time_to: dates.endTime, offset: String(offset) });
       api(`/workspace?${params}`, { signal: controller.signal })
         .then((response) => response.json() as Promise<{ rows: Row[]; has_more: boolean }>)
-        .then((data) => { setRows(data.rows); setMore(data.has_more); setError(''); })
+        .then((data) => { if (!controller.signal.aborted) { setRows(data.rows); setMore(data.has_more); setError(''); } })
         .catch((reason: Error) => { if (reason.name !== 'AbortError') setError(reason.message); })
         .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [direction, search, phones, statuses, from, to, offset]);
+  }, [direction, search, phones, statuses, dates, offset, preferencesLoaded]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -140,7 +163,7 @@ export default function MatchWorkspace() {
       body: JSON.stringify({ direction, ids: selected }), signal: controller.signal,
     })
       .then((response) => response.json() as Promise<{ groups: Group[] }>)
-      .then((data) => setGroups(data.groups))
+      .then((data) => { if (!controller.signal.aborted) setGroups(data.groups); })
       .catch((reason: Error) => { if (reason.name !== 'AbortError') setError(reason.message); })
       .finally(() => { if (!controller.signal.aborted) setMatching(false); });
     return () => controller.abort();
@@ -193,10 +216,7 @@ export default function MatchWorkspace() {
         <span className="relative mt-1 block"><Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" /><input className={`${fieldClass} w-full pl-9`} value={search} onChange={(event) => { resetSelection(); setSearch(event.target.value); }} placeholder="Nama, lokasi, atau kategori…" /></span>
       </label>
       {direction === 'property' && <label className="min-w-64 flex-1 text-[13px] font-medium text-slate-600">Nomor kontak listing<input className={`${fieldClass} mt-1 w-full`} value={phones} onChange={(event) => { resetSelection(); setPhones(event.target.value); }} placeholder="Pisahkan beberapa nomor dengan koma" /></label>}
-      <div className="flex items-end gap-2"><CalendarDays className="mb-3 size-4 text-slate-400" />
-        <label className="text-[13px] font-medium text-slate-600">Dari<input type="date" className={`${fieldClass} mt-1 block`} value={from} max={to || undefined} onChange={(event) => { resetSelection(); setFrom(event.target.value); }} /></label>
-        <label className="text-[13px] font-medium text-slate-600">Sampai<input type="date" className={`${fieldClass} mt-1 block`} value={to} min={from || undefined} onChange={(event) => { resetSelection(); setTo(event.target.value); }} /></label>
-      </div>
+      <DateFilter value={dates} direction={direction} onChange={next => { resetSelection(); setDates(next); }} />
       <div className="flex flex-wrap gap-2">
         {([['hot', 'Hot', 'bg-rose-500'], ['warm', 'Warm', 'bg-amber-500'], ['unmatched', 'Belum cocok', 'bg-slate-400']] as const).map(([status, label, dot]) => <button key={status} type="button" aria-pressed={statuses.includes(status)} className={`inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[13px] font-semibold transition ${statuses.includes(status) ? 'border-blue-200 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-500'}`} onClick={() => toggleStatus(status)}><span className={`size-2 rounded-full ${dot}`} />{label}</button>)}
       </div>
@@ -211,12 +231,12 @@ export default function MatchWorkspace() {
           {loading && <p className="p-6 text-sm text-slate-500">Memuat data…</p>}
           {!loading && rows.map((row) => {
             const checked = selected.includes(row.id);
-            return <article key={row.id} className={`mb-1.5 rounded-xl border p-3.5 transition ${checked ? 'border-blue-300 bg-blue-50/70' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}>
+            return <article key={row.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 180px' }} className={`mb-1.5 rounded-xl border p-3.5 transition ${checked ? 'border-blue-300 bg-blue-50/70' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}>
               <div className="flex items-start gap-3"><Checkbox id={`source-${row.id}`} checked={checked} onCheckedChange={() => setSelected((current) => current.includes(row.id) ? current.filter((id) => id !== row.id) : current.length < 50 ? [...current, row.id] : current)} />
                 <div className="min-w-0 flex-1"><label htmlFor={`source-${row.id}`} className="flex cursor-pointer items-start justify-between gap-3"><span className="break-words text-sm font-semibold text-slate-900">{row.contact_name || `${sourceLabel} tanpa nama`}</span><span className="shrink-0 text-[11px] text-slate-400">{relativeDate(row.sent_at)}</span></label>
                   <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-slate-600">{structuredSummary(row) || row.raw_text}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">{Number(row.hot_count) > 0 && <Badge className="bg-rose-50 text-rose-700 hover:bg-rose-50">{row.hot_count} Hot</Badge>}{Number(row.warm_count) > 0 && <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">{row.warm_count} Warm</Badge>}{Number(row.match_count) === 0 && <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">Belum cocok</Badge>}</div>
-                  <RawChat text={row.raw_text || row.normalized_text} />
+                  <DuplicateBadge row={row} /><RawChat text={row.raw_text || row.normalized_text} />
                 </div>
               </div>
             </article>;
@@ -236,9 +256,9 @@ export default function MatchWorkspace() {
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3"><p className="text-[13px] text-slate-500">Untuk</p><p className="text-sm font-semibold">{group.source.contact_name || structuredSummary(group.source)}</p></div>
             <div className="space-y-2 p-3">{group.unmatched ? <div className="flex items-center gap-3 rounded-lg bg-slate-50 p-4 text-sm text-slate-600"><Checkbox aria-label="Tandai status belum cocok untuk PDF" checked={exports.includes(keyFor(group.source))} onCheckedChange={() => setExports((current) => current.includes(keyFor(group.source)) ? current.filter((key) => key !== keyFor(group.source)) : [...current, keyFor(group.source)])} />Belum ada pasangan yang lolos batas pencocokan</div> : group.recommendations.map((target) => {
               const key = keyFor(group.source, target); const hot = Number(target.score) >= 80;
-              return <article key={target.id} className="rounded-xl border border-slate-200 p-3.5"><div className="flex items-start gap-3"><Checkbox checked={exports.includes(key)} onCheckedChange={() => setExports((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])} />
-                <div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{target.contact_name || structuredSummary(target)}</p><p className="mt-1 text-[13px] leading-5 text-slate-600">{structuredSummary(target)}</p></div><Badge className={hot ? 'bg-rose-50 text-rose-700 hover:bg-rose-50' : 'bg-amber-50 text-amber-700 hover:bg-amber-50'}>{hot ? 'Hot' : 'Warm'} · {Math.round(Number(target.score))}%</Badge></div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">{target.explanation?.slice(0, 4).map((reason) => <span key={reason} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">{reason}</span>)}</div><RawChat text={target.raw_text || target.normalized_text} /><div className="mt-3 flex flex-wrap gap-4"><ContactButton row={group.source} label={`WhatsApp ${sourceLabel}`} /><ContactButton row={target} label={`WhatsApp ${targetLabel}`} /></div>
+              return <article key={target.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 240px' }} className="rounded-xl border border-slate-200 p-3.5"><div className="flex items-start gap-3"><Checkbox checked={exports.includes(key)} onCheckedChange={() => setExports((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])} />
+                <div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{target.contact_name || structuredSummary(target)}</p><LastSeen row={target} /><p className="mt-1 text-[13px] leading-5 text-slate-600">{structuredSummary(target)}</p></div><Badge className={hot ? 'bg-rose-50 text-rose-700 hover:bg-rose-50' : 'bg-amber-50 text-amber-700 hover:bg-amber-50'}>{hot ? 'Hot' : 'Warm'} · {Math.round(Number(target.score))} poin</Badge></div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">{target.explanation?.map((reason) => <span key={reason} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">{reason}</span>)}</div><DuplicateBadge row={target} /><RawChat text={target.raw_text || target.normalized_text} /><div className="mt-3 flex flex-wrap gap-4"><ContactButton row={group.source} label={`WhatsApp ${sourceLabel}`} /><ContactButton row={target} label={`WhatsApp ${targetLabel}`} /></div>
                 </div>
               </div></article>;
             })}</div>

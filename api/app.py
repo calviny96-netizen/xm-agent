@@ -3,6 +3,8 @@ import json
 import os
 import shutil
 import uuid
+import time
+from threading import Lock
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -75,19 +77,40 @@ def health():
     return {"ok": postgres_ok, "postgres": postgres_ok, "qdrant": qdrant_status()}
 
 
+_stats_lock = Lock()
+_stats_cache = None
+_stats_cached_at = 0.0
+
+
 @app.get("/stats")
 def stats():
+    # Multiple open tabs poll this endpoint. Share one short-lived result so
+    # they do not run the same full-archive aggregates concurrently.
+    global _stats_cache, _stats_cached_at
+    with _stats_lock:
+        if _stats_cache is None or time.monotonic() - _stats_cached_at >= 15:
+            _stats_cache = load_stats()
+            _stats_cached_at = time.monotonic()
+        return _stats_cache
+
+
+def load_stats():
+    import workspace_cache
     with connect() as conn:
-        row = conn.execute(
-            """
-            SELECT
+        if workspace_cache.ready(conn):
+            row = conn.execute("""SELECT
               (SELECT count(*) FROM xm.raw_messages WHERE company_id='xm') raw_messages,
-              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND document_type='buyer_request') buyer_requests,
-              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND document_type='property_listing') listings,
+              (SELECT count(*) FROM xm.document_groups WHERE company_id='xm' AND document_type='buyer_request') buyer_requests,
+              (SELECT count(*) FROM xm.document_groups WHERE company_id='xm' AND document_type='property_listing') listings,
               (SELECT count(*) FROM xm.matches WHERE company_id='xm') matches,
-              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND review_status='review') needs_review
-            """
-        ).fetchone()
+              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND review_status='review') needs_review""").fetchone()
+        else:
+            row = conn.execute("""SELECT
+              (SELECT count(*) FROM xm.raw_messages WHERE company_id='xm') raw_messages,
+              (SELECT count(DISTINCT r.raw_text) FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.document_type='buyer_request') buyer_requests,
+              (SELECT count(DISTINCT r.raw_text) FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.document_type='property_listing') listings,
+              (SELECT count(*) FROM xm.matches WHERE company_id='xm') matches,
+              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND review_status='review') needs_review""").fetchone()
     return {**row, "qdrant": qdrant_status()}
 
 
@@ -374,3 +397,5 @@ def agent_matches(contact: str | None = None, min_score: float = 60, limit: int 
 
 from workspace import router as workspace_router
 app.include_router(workspace_router)
+from location_routes import router as location_router
+app.include_router(location_router)

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS xm.raw_messages (
 CREATE INDEX IF NOT EXISTS raw_messages_import_idx ON xm.raw_messages(import_id);
 CREATE INDEX IF NOT EXISTS raw_messages_classification_idx ON xm.raw_messages(company_id, classification);
 CREATE INDEX IF NOT EXISTS raw_messages_hash_idx ON xm.raw_messages(company_id, message_hash);
+CREATE INDEX IF NOT EXISTS raw_messages_text_group_idx ON xm.raw_messages(company_id, md5(raw_text));
 
 CREATE TABLE IF NOT EXISTS xm.documents (
     id uuid PRIMARY KEY,
@@ -167,6 +168,12 @@ CREATE TABLE IF NOT EXISTS xm.audit_events (
 CREATE TABLE IF NOT EXISTS xm.glossary (
   alias text PRIMARY KEY, canonical text NOT NULL
 );
+CREATE TABLE IF NOT EXISTS xm.location_indexes (
+ company_id text PRIMARY KEY,
+ data jsonb NOT NULL DEFAULT '{"clusters":[],"edges":[]}'::jsonb,
+ sources jsonb NOT NULL DEFAULT '[]'::jsonb,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
 INSERT INTO xm.glossary(alias, canonical) VALUES
 ('regensi','regency'),('rgcy','regency'),('nashos','national hospital'),('nathos','national hospital')
 ON CONFLICT DO NOTHING;
@@ -185,3 +192,21 @@ ALTER TABLE xm.match_settings ADD COLUMN IF NOT EXISTS building_weight_pct numer
 ALTER TABLE xm.match_settings ADD COLUMN IF NOT EXISTS price_weight_pct numeric NOT NULL DEFAULT 20;
 ALTER TABLE xm.match_settings ADD COLUMN IF NOT EXISTS semantic_weight_pct numeric NOT NULL DEFAULT 5;
 ALTER TABLE xm.match_settings ADD COLUMN IF NOT EXISTS data_quality_weight_pct numeric NOT NULL DEFAULT 5;
+
+CREATE TABLE IF NOT EXISTS xm.document_groups (
+ group_id uuid PRIMARY KEY, company_id text NOT NULL, document_type text NOT NULL,
+ duplicate_count bigint NOT NULL, last_seen_at timestamp,
+ hot_count bigint NOT NULL DEFAULT 0,warm_count bigint NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS document_groups_kind_idx ON xm.document_groups(company_id,document_type,last_seen_at DESC);
+CREATE TABLE IF NOT EXISTS xm.document_group_members (
+ document_id uuid PRIMARY KEY,group_id uuid NOT NULL,company_id text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS group_members_group_idx ON xm.document_group_members(group_id);
+CREATE TABLE IF NOT EXISTS xm.group_matches (
+ company_id text NOT NULL,buyer_group_id uuid NOT NULL,property_group_id uuid NOT NULL,
+ match_id uuid NOT NULL,score numeric NOT NULL,
+ PRIMARY KEY(buyer_group_id,property_group_id)
+);
+CREATE INDEX IF NOT EXISTS group_matches_property_idx ON xm.group_matches(property_group_id,score DESC);
+CREATE TABLE IF NOT EXISTS xm.workspace_cache_state(company_id text PRIMARY KEY,refreshed_at timestamptz NOT NULL);

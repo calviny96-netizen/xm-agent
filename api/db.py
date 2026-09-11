@@ -18,7 +18,10 @@ def database_url() -> str:
 
 
 def connect():
-    return psycopg.connect(database_url(), row_factory=dict_row)
+    # Docker's shared PostgreSQL has a small /dev/shm. Concurrent parallel
+    # aggregates can exhaust it on the full archive; scope this to XM sessions.
+    return psycopg.connect(database_url(), row_factory=dict_row,
+                            options='-c max_parallel_workers_per_gather=0 -c work_mem=32MB')
 
 
 def ensure_schema() -> None:
@@ -26,4 +29,3 @@ def ensure_schema() -> None:
     with connect() as conn:
         conn.execute(sql)
         conn.commit()
-

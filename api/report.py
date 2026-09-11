@@ -54,7 +54,7 @@ def build_report(pairs, direction):
                     pdf.drawString(x+22,69,'WhatsApp: +'+phone)
                     pdf.linkURL('https://wa.me/'+phone,(x+12,60,x+242,85),relative=0)
             pdf.setFillColor(HexColor('#53617b'));pdf.setFont('Helvetica',10)
-            status=('Hot' if float(target['score'])>=80 else 'Warm')+f" - {float(target['score']):.0f}%" if target else 'Belum cocok'
+            status=('Hot' if float(target['score'])>=80 else 'Warm')+f" - {float(target['score']):.0f} poin" if target else 'Belum cocok'
             pdf.drawString(32,30,status);pdf.drawRightString(810,30,f'XM Property Matchmaker | {page}')
             pdf.showPage()
     pdf.save()

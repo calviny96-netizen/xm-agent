@@ -91,10 +91,15 @@ def normalize_phone(value):
 
 def split_contact(text):
     # Contact headings work both in multiline bubbles and flattened exports.
-    marker = re.search(r"\b(?:contact|kontak|hubungi|info\s+lanjut|marketing)\s*[:：]?", text, re.I)
+    markers = list(re.finditer(r"\b(?:contact|kontak|hubungi|info\s+lanjut|marketing)\s*[:：]?", text, re.I))
+    core = r'(?im)^\s*[-*•>_ ]*(?:luas|lt\b|lb\b|budget|harga|hadap|cari beli|cari sewa|kamar|row\b)'
+    marker = next((m for m in reversed(markers) if not re.search(core,text[m.end():])),None)
     cut = marker.start() if marker else len(text)
     if not marker:
-        phone = re.search(PHONE_PATTERN, text)
+        phones = list(re.finditer(PHONE_PATTERN, text))
+        phone = phones[-1] if phones else None
+        if phone and re.search(core,text[phone.end():]):
+            return re.sub(r'https?://\S+|wa\.me/\S+|' + PHONE_PATTERN,'',text), ''
         if phone:
             line_start = text.rfind("\n", 0, phone.start()) + 1
             prefix = text[line_start:phone.start()]
@@ -103,10 +108,23 @@ def split_contact(text):
             else:
                 name = re.search(r"[A-Za-z][A-Za-z ]{2,40}\s*[|:-]\s*$", prefix)
                 cut = line_start + name.start() if name else phone.start()
+    if not marker and cut < len(text):
+        before = text[:cut].rstrip()
+        paragraph_start = before.rfind('\n\n') + 2
+        if paragraph_start > 1:
+            block = before[paragraph_start:]
+            if len(block) < 220 and not re.search(r'\b(?:harga|budge[dt]|luas|lt|lb|cari|request|rumah|ruko|tanah|apart(?:e)?men|gudang|kamar|syarat)\b',block,re.I):
+                cut = paragraph_start
     return text[:cut].strip(), text[cut:].strip()
 
+def glossary_terms(glossary=None):
+    # Descriptions explain a term; they are never evidence from a message.
+    return {k.lower(): re.split(r"\s+--\s+", v, maxsplit=1)[0].strip()
+            for k,v in {**DEFAULT_GLOSSARY, **(glossary or {})}.items() if k and v}
+
+
 def apply_glossary(text, glossary=None):
-    mappings = {**DEFAULT_GLOSSARY, **(glossary or {})}
+    mappings = glossary_terms(glossary)
     pattern = r"(?<!\w)(?:" + "|".join(re.escape(k) for k in sorted(mappings, key=len, reverse=True)) + r")(?!\w)"
     return re.sub(pattern, lambda m: mappings[m.group(0).lower()], text, flags=re.I)
 
@@ -132,14 +150,23 @@ def _number(value: str) -> float:
 
 
 def _range_from_line(line: str) -> tuple[float | None, float | None]:
+    # An explicitly stated area wins over rounded frontage/depth dimensions.
+    explicit = re.search(r"(?<![\d.,])(\d+(?:[.,]\d+)?)\s*(?:m2|m²)\b", line)
+    if explicit and not re.search(r"(?:\d\s*(?:-|–|s/d|sampai|sd)|[<>]|min|max|maks)", line[:explicit.start()]):
+        value = _number(explicit.group(1))
+        return value, value
     dimension = re.search(r"(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)", line)
     if dimension:
         result = _number(dimension.group(1)) * _number(dimension.group(2))
         return result, result
+    minimum = re.search(r"\bmin(?:imal|im)?\.?\s*(\d+(?:[.,]\d+)?)", line)
+    maximum = re.search(r"\b(?:maks(?:imal)?|max)\.?\s*(\d+(?:[.,]\d+)?)", line)
+    if minimum or maximum:
+        return _number(minimum[1]) if minimum else None, _number(maximum[1]) if maximum else None
     ranged = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:-|–|s/d|sampai|sd)\s*(\d+(?:[.,]\d+)?)", line)
     if ranged:
         return _number(ranged.group(1)), _number(ranged.group(2))
-    value = re.search(r"(?:>|min(?:imal)?\.?|mulai)\s*(\d+(?:[.,]\d+)?)", line)
+    value = re.search(r"(?:>|min(?:imal|im)?\.?|mulai)\s*(\d+(?:[.,]\d+)?)", line)
     if value:
         return _number(value.group(1)), None
     value = re.search(r"(?:<|maks(?:imal)?\.?|max)\s*(\d+(?:[.,]\d+)?)", line)
@@ -161,17 +188,22 @@ def _areas(text: str, kind: str) -> tuple[float | None, float | None]:
         "land": r"(?:luas\s+tanah|\blt\b|luasan\s+tanah)",
         "building": r"(?:luas\s+bangunan|\blb\b|bangunan)",
     }
-    match = re.search(patterns[kind] + r"\s*[:=]?\s*([+~\-\s]*[<>]?[\d].*?)(?=\n|\b(?:lt|lb|kt|km|harga|budget|bangunan|sertifikat|hadap)\b|(?<=m2)\s|$)", text.lower())
+    match = re.search(patterns[kind] + r"\s*[.:=]?\s*((?:(?:min(?:imal|im)?|max|maks(?:imal)?)\.?\s*)?[*+±~\-\s]*[<>]?[\d].*?)(?=\n|\b(?:lt|lb|kt|km|harga|budget|bangunan|sertifikat|hadap)\b|(?<=m2)\s|$)", text.lower())
     if match:
+        if re.match(r"[*+±~\-\s]*\d+\s*lantai\b", match.group(1)):
+            return None, None
         return _range_from_line(match.group(1))
     return None, None
 
 
 def _money_value(number: str, unit: str | None) -> int:
-    value = Decimal(str(_number(number)))
+    amount = number.strip()
+    if amount.count(',') == 1:
+        amount = amount.replace('.', '').replace(',', '.')
+    value = Decimal(amount) if ',' not in amount and amount.count('.') <= 1 else Decimal(str(_number(amount)))
     unit = (unit or "").lower()
     multiplier = Decimal(1)
-    if unit in {"m", "milyar", "miliar", "b", "bn"}:
+    if unit in {"m", "milyar", "milyard", "miliar", "miliard", "b", "bn"}:
         multiplier = Decimal(1_000_000_000)
     elif unit in {"jt", "juta"}:
         multiplier = Decimal(1_000_000)
@@ -181,11 +213,20 @@ def _money_value(number: str, unit: str | None) -> int:
 
 
 def _price(text: str) -> tuple[int | None, int | None, str | None]:
-    for line in re.split(r"\n|(?=\bharga\b|\bbudget\b)", text.lower()):
-        if not re.search(r"budge[dt]|harga|sewa|jual", line):
+    text = re.sub(r'\bbugdet\b|\bbudged\b', 'budget', text.lower())
+    text = re.sub(r'\bjuta+a+n?\b', 'juta', text)
+    text = re.sub(r'(?<=\d)man\b', ' m', text)
+    for line in re.split(r"\n|(?=\bharga\b|\bbudget\b)", text):
+        if not re.search(r"budge[dt]|harga|sewa|jual|under|di bawah|dibawah", line):
             continue
-        line = re.sub(r"(\d+(?:[.,]\d+)?)\s*[-–]\s*(\d+(?:[.,]\d+)?)\s*(milyar|miliar|juta|jt|m)\b", r"\1 \3 - \2 \3", line)
-        values = re.findall(r"(?:rp\.?\s*)?(\d+(?:[.,]\d+)?)\s*(milyar|miliar|juta|jt|ribu|rb|bn|b|m)?\b", line)
+        line = re.sub(r"(\d+(?:[.,]\d+)?)\s*[-–]\s*(\d+(?:[.,]\d+)?)\s*(milyard?|miliard?|juta|jt|m)\b", r"\1 \3 - \2 \3", line)
+        values = re.findall(r"(?:rp\.?\s*)?(\d+(?:[.,]\d+)?)\s*(milyard?|miliard?|juta|jt|ribu|rb|bn|b|m)?\b", line)
+        per_area = re.search(r'(\d+(?:[.,]\d+)?)\s*(milyard?|miliard?|juta|jt|ribu|rb|m)\s*(?:/|per)\s*m(?:2|²)',line)
+        if per_area:
+            amount=_money_value(per_area[1],per_area[2])
+            if re.search(r'\b(?:min(?:imal|im)?|mulai|diatas|di atas)\s*[:=]?\s*$',line[:per_area.start()]):
+                return amount,None,'per_m2'
+            return (None,amount,'per_m2') if re.search(r'\b(?:max|maks|under)\b',line) else (amount,amount,'per_m2')
         money = [(_money_value(number, unit), unit) for number, unit in values if unit]
         if not money:
             continue
@@ -193,13 +234,17 @@ def _price(text: str) -> tuple[int | None, int | None, str | None]:
         basis = "per_m2" if re.search(r"/(?:m2|m²)|per\s*(?:m2|m²|meter)", line) else "per_year" if re.search(r"/th|tahun|per\s*tahun", line) else "total"
         if re.search(r"\b(?:max|maks(?:imal)?|under|dibawah|di bawah)\b", line):
             return None, max(numbers), basis
-        if re.search(r"\b(?:min(?:imal)?|mulai|diatas|di atas)\b", line):
+        if re.search(r"\b(?:min(?:imal|im)?|mulai|diatas|di atas)\b", line):
             return min(numbers), None, basis
         return min(numbers), max(numbers), basis
     return None, None, None
 
 
 def _categories(text: str) -> list[str]:
+    # Intended use and interior amenities are not the asset being requested/sold.
+    if re.search(r"\btanah\s+(?:spesifikasi|untuk|buat|guna)\b", text):
+        return ["land"]
+    text = re.split(r"\b(?:cocok|ideal)\s+(?:untuk|utk|buat)\b", text)[0]
     found = []
     for category, patterns in CATEGORY_PATTERNS.items():
         if any(re.search(pattern, text) for pattern in patterns):
@@ -241,7 +286,7 @@ def _classification(text: str) -> tuple[str, float]:
     listing_hits = sum(marker in signal for marker in LISTING_MARKERS)
     property_hits = sum(any(re.search(pattern, lower) for pattern in patterns) for patterns in CATEGORY_PATTERNS.values())
     explicit_request = re.search(r"\b(?:dicari|buyer request|buyer need|request buyer|renter request|cari beli|cari sewa)\b", signal)
-    sales_pitch = listing_hits or re.search(r"\b(?:ready|siap huni|bonus|furnished)\b", signal)
+    sales_pitch = listing_hits or re.search(r"\b(?:ready|siap huni|bonus|furnished|pilihan yang tepat)\b", signal) or re.search(r"cari[^\n?]{0,100}\?",lower)
     concrete_stock = re.search(r"\bharga\b", signal) and re.search(r"\b(?:lt|luas tanah|lb)\b", signal)
     if concrete_stock and sales_pitch and not explicit_request:
         return "property_listing", 0.95
@@ -257,11 +302,18 @@ def _classification(text: str) -> tuple[str, float]:
 def parse_message(text: str, author: str | None = None, glossary: dict | None = None) -> ParsedDocument:
     original = clean_text(text)
     body, signature = split_contact(original)
-    text = apply_glossary(body, glossary)
+    text = apply_glossary(re.sub(r'[*_~]', '', body), glossary)
     lower = text.lower()
     flat = normalized(text)
     classification, confidence = _classification(text)
-    categories = _categories(flat)
+    categories = _categories(normalized(re.sub(r'[*_~]', '', body)))
+    if classification == 'property_listing':
+        title = re.split(r'\b(?:luas|lt|lb|kamar|harga|fasilitas)\b', normalized(re.sub(r'[*_~]', '', body)), maxsplit=1)[0]
+        title_categories = _categories(title)
+        if title_categories:
+            categories = title_categories
+    if 'shophouse' in categories and re.search(r'rumah\s+usaha',flat) and not re.search(r'\brumah\b(?!\s+usaha)',flat):
+        categories = [c for c in categories if c != 'house']
     transaction = "unknown"
     signal = re.sub(r"[^a-z0-9]+", " ", lower)
     if re.search(r"renter|sewa|disewakan|for rent", signal):
@@ -271,17 +323,33 @@ def parse_message(text: str, author: str | None = None, glossary: dict | None = 
     land_min, land_max = _areas(text, "land")
     if land_min is None and land_max is None and "land" in categories:
         for line in lower.splitlines():
-            if re.search(r"\b(?:uk|ukuran|luas)\b", line):
+            if re.search(r"\b(?:uk|ukuran|luas|luasan)\b", line):
                 land_min, land_max = _range_from_line(line)
                 if land_min is not None or land_max is not None:
                     break
+    if land_min is None and land_max is None and classification == 'buyer_request' and 'apartment' not in categories:
+        for line in lower.splitlines():
+            if re.search(r'\b(?:luas|luasan)\b.*\d',line) and not re.search(r'\b(?:bangunan|lb|parkir)\b',line):
+                land_min, land_max = _range_from_line(line)
+                if re.search(r'ke atas|keatas',line): land_max=None
+                break
     building_min, building_max = _areas(text, "building")
-    price_min, price_max, price_basis = _price(text)
+    price_text = text
+    if classification == 'property_listing' and re.search(r'turun harga|harga turun', lower):
+        current = [line for line in text.splitlines() if re.match(r'\s*harga\s*[:=]?\s*(?:rp\.?\s*)?\d',line,re.I)]
+        if current: price_text=current[-1]
+    price_min, price_max, price_basis = _price(price_text)
+    if classification == 'buyer_request' and price_min == price_max and price_max is not None:
+        price_min = None
     facing_text = " ".join(re.findall(r"(?:hadap|facing)\s*[:=-]?\s*([^\n,.]{2,30})", lower))
     facing = [direction for direction in ("utara", "timur", "selatan", "barat") if re.search(rf"\b{direction}\b", facing_text)]
     exclusions = []
-    for expression in re.findall(r"(?:❌|\bno\b|\bnon\b|tidak mau)\s*([^,;\n]{2,35})", lower):
-        exclusions.append(expression.strip(" .-_"))
+    for line in lower.splitlines():
+        negative = re.search(r"(?:❌|\bno\b|\bnon\b|tidak mau|gamau|g mau)\s*(.+)",line)
+        if negative:
+            for expression in re.split(r'[,;/]|\s+atau\s+',negative[1]):
+                expression=re.sub(r'^(?:tidak mau|area)\s+', '',expression.strip(' .-_*❌'))
+                if expression: exclusions.append(expression)
     requirements = []
     for keyword in ("siap huni", "siap pakai", "akses kontainer", "jalan raya", "hook", "shm", "hgb", "non lsd", "dekat tol", "parkiran luas", "full furnish", "minimalis modern"):
         if keyword in lower:
@@ -294,12 +362,16 @@ def parse_message(text: str, author: str | None = None, glossary: dict | None = 
         transaction = "sale"
     contact_name = re.sub(r"^(?:contact|kontak|hubungi)\s*[:：]?", "", signature, flags=re.I)
     contact_name = re.split(PHONE_PATTERN + r"|https?://|wa\.me", contact_name)[0].strip(" *_|:-\n")
+    places = set(KNOWN_LOCATIONS) | {'regency', 'national hospital', 'garden mansion', 'kawasan industri gresik', 'sidoarjo rangkah industrial estate', 'padepokan cahaya putra'}
+    location_text = '\n'.join(re.split(r'tidak mau|gamau|g mau',line)[0] if classification == 'buyer_request' else re.split(r'\b(?:dekat|tidak jauh|menit dari|akses ke)\b',line)[0] for line in lower.splitlines())
+    locations = _locations(location_text)
+    locations += [v.lower() for k,v in glossary_terms(glossary).items() if (v.lower() in places or ('--' not in (glossary or {}).get(k,'--') and not re.search(r'kamar|sertifikat|furnish|nego|carport|for sale|for rent|luas tanah|luas bangunan',v))) and re.search(rf'\b{re.escape(v)}\b', location_text)]
     return ParsedDocument(
         classification=classification,
         confidence=confidence,
         transaction_type=transaction,
         categories=categories,
-        locations=list(dict.fromkeys(_locations(lower) + [v.lower() for v in {**DEFAULT_GLOSSARY, **(glossary or {})}.values() if re.search(rf"\b{re.escape(v)}\b", lower)])),
+        locations=list(dict.fromkeys(locations)),
         land_area_min=land_min,
         land_area_max=land_max,
         building_area_min=building_min,
