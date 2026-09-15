@@ -70,7 +70,7 @@ def get_preferences(request: Request):
             'SELECT preferences FROM xm.user_preferences WHERE user_id=%s',
             (user['id'],),
         ).fetchone()
-    return row['preferences'] if row else Preferences().model_dump()
+    return {**Preferences().model_dump(), **(row['preferences'] if row else {})}
 
 
 @router.put('/preferences')
@@ -79,11 +79,37 @@ def save_preferences(payload: Preferences, request: Request):
     with connect() as conn:
         conn.execute(
             '''INSERT INTO xm.user_preferences(user_id, preferences) VALUES(%s,%s::jsonb)
-               ON CONFLICT(user_id) DO UPDATE SET preferences=excluded.preferences, updated_at=now()''',
+               ON CONFLICT(user_id) DO UPDATE SET preferences=xm.user_preferences.preferences || excluded.preferences, updated_at=now()''',
             (user['id'], json.dumps(payload.model_dump())),
         )
         conn.commit()
     return payload
+
+class SearchDefault(BaseModel):
+    search: str = Field(default='XM Darmo', max_length=200)
+
+
+@router.get('/search-default')
+def get_search_default(request: Request):
+    return {'search': get_preferences(request).get('default_search', 'XM Darmo')}
+
+
+@router.put('/search-default')
+def save_search_default(payload: SearchDefault, request: Request):
+    user = current_user(request)
+    value = payload.search.strip()
+    if not value:
+        raise HTTPException(400, 'Default pencarian wajib diisi.')
+    with connect() as conn:
+        conn.execute(
+            '''INSERT INTO xm.user_preferences(user_id, preferences) VALUES(%s,%s::jsonb)
+               ON CONFLICT(user_id) DO UPDATE SET
+               preferences=xm.user_preferences.preferences || excluded.preferences, updated_at=now()''',
+            (user['id'], json.dumps({'default_search': value})),
+        )
+        conn.commit()
+    return {'search': value}
+
 
 @router.put('/glossary')
 def save_glossary(payload: Glossary):

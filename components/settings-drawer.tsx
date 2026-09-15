@@ -78,6 +78,8 @@ function prepareCsv(fileName: string, text: string): CsvPreview {
 }
 
 export default function SettingsDrawer({ email, onLogout, onDataChanged }: { email: string; onLogout: () => void; onDataChanged: () => void }) {
+  const [searchDefault, setSearchDefault] = useState('');
+  const [savedSearchDefault, setSavedSearchDefault] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [glossary, setGlossary] = useState<[string, string][]>([]);
   const [imports, setImports] = useState<ImportRow[]>([]);
@@ -92,6 +94,7 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
   const csvInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    void api('/search-default').then(r => r.json() as Promise<{ search: string }>).then(data => { setSearchDefault(data.search); setSavedSearchDefault(data.search); }).catch((reason: Error) => setError(reason.message));
     Promise.all([
       api('/settings').then((response) => response.json() as Promise<Settings>),
       api('/glossary').then((response) => response.json() as Promise<Record<string, string>>),
@@ -188,6 +191,12 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
           <TabsList className="mt-1 grid h-auto w-full grid-cols-2 gap-1"><TabsTrigger value="matching">Pencocokan</TabsTrigger><TabsTrigger value="locations">Indeks lokasi</TabsTrigger><TabsTrigger value="source">Sumber data</TabsTrigger><TabsTrigger value="account">Akun</TabsTrigger></TabsList>
           <TabsContent value="locations" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1"><LocationIndexPanel processing={processing} jobStatus={job?.status} onImported={() => { onDataChanged(); void api('/index/status').then(r => r.json() as Promise<typeof job>).then(setJob).catch(() => {}); }} /></TabsContent>
           <TabsContent value="matching" className="mt-5 max-h-[calc(100vh-150px)] space-y-6 overflow-y-auto pr-1">
+            <section className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4"><h3 className="text-sm font-semibold">Default pencarian</h3><p className="mt-1 text-[13px] leading-5 text-slate-500">Otomatis mengisi pencarian Buyer → Property dan Property → Buyer. Perubahan berlaku setelah disimpan.</p><label className="mt-3 block text-sm font-medium">Nama / kata pencarian<input className={`${fieldClass} mt-1`} disabled={savedSearchDefault === null} value={searchDefault} maxLength={200} onChange={event => setSearchDefault(event.target.value)} /></label><Button className="mt-3 w-full" disabled={savedSearchDefault === null || !searchDefault.trim() || searchDefault.trim() === savedSearchDefault || !!busy} onClick={async () => {
+              setBusy('Menyimpan default…'); setError(''); setNotice('');
+              try { const data = await (await api('/search-default', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ search: searchDefault }) })).json() as { search: string }; setSearchDefault(data.search); setSavedSearchDefault(data.search); setNotice('Default pencarian tersimpan.'); onDataChanged(); }
+              catch (reason) { setError(reason instanceof Error ? reason.message : 'Gagal menyimpan default'); }
+              finally { setBusy(''); }
+            }}>Simpan default pencarian</Button></section>
             {!settings ? <p className="text-sm text-slate-500">Memuat pengaturan…</p> : <>
               <section><h3 className="text-sm font-semibold">Toleransi requirement</h3><p className="mt-1 text-[13px] leading-5 text-slate-500">Di luar toleransi tidak direkomendasikan. Dalam toleransi atau data belum lengkap: maksimal Warm.</p><div className="mt-3 grid grid-cols-3 gap-3">{([['land_tolerance_pct', 'LT'], ['building_tolerance_pct', 'LB'], ['price_tolerance_pct', 'Harga']] as const).map(([key, label]) => <label key={key} className="text-[13px] font-medium text-slate-600">{label} (%)<input type="number" min="0" max="100" className={`${fieldClass} mt-1`} value={settings[key]} disabled={processing} onChange={(event) => { setSettings({ ...settings, [key]: Number(event.target.value) }); setDirty(true); }} /></label>)}</div></section>
               <section><div className="flex items-end justify-between"><div><h3 className="text-sm font-semibold">Bobot score</h3><p className="mt-1 text-[13px] text-slate-500">Bobot digunakan setelah syarat wajib lolos. Kebutuhan yang tidak dibatasi tidak menambah skor.</p></div><Badge className={weightTotal === 100 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}>Total {weightTotal}%</Badge></div><div className="mt-3 grid grid-cols-2 gap-3">{labels.map(([key, label]) => <label key={key} className="text-[13px] font-medium text-slate-600">{label} (%)<input type="number" min="0" max="100" className={`${fieldClass} mt-1`} value={settings[key]} disabled={processing} onChange={(event) => { setSettings({ ...settings, [key]: Number(event.target.value) }); setDirty(true); }} /></label>)}</div></section>

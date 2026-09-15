@@ -1,4 +1,5 @@
 from io import BytesIO
+from urllib.parse import quote
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -8,6 +9,45 @@ from reportlab.platypus import Paragraph
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.colors import HexColor
 from reportlab.lib.utils import ImageReader
+
+
+def status_badge(pdf, hot):
+    # Vector emoji silhouettes remain sharp and portable without emoji fonts.
+    pdf.saveState()
+    pdf.setFillColor(HexColor('#fee2e2' if hot else '#ffedd5'))
+    pdf.roundRect(32, 18, 48, 30, 10, fill=1, stroke=0)
+    pdf.translate(44, 22)
+    if hot:
+        pdf.setFillColor(HexColor('#ef4444'))
+        path = pdf.beginPath()
+        path.moveTo(12, 23); path.curveTo(15, 14, 24, 13, 21, 5)
+        path.curveTo(18, -3, 3, -1, 3, 8)
+        path.curveTo(3, 13, 8, 17, 8, 19)
+        path.curveTo(8, 13, 12, 12, 12, 23)
+        pdf.drawPath(path, fill=1, stroke=0)
+        pdf.setFillColor(HexColor('#fbbf24'))
+        path = pdf.beginPath(); path.moveTo(13, 13)
+        path.curveTo(13, 8, 18, 6, 15, 2); path.curveTo(8, -1, 6, 5, 13, 13)
+        pdf.drawPath(path, fill=1, stroke=0)
+    else:
+        pdf.setStrokeColor(HexColor('#64748b')); pdf.setLineWidth(1.5)
+        pdf.setFillColor(HexColor('#ffffff')); pdf.roundRect(9, 6, 7, 17, 3.5, fill=1, stroke=1)
+        pdf.circle(12.5, 5, 5, fill=1, stroke=1)
+        pdf.setStrokeColor(HexColor('#f97316')); pdf.setLineWidth(3); pdf.line(12.5, 5, 12.5, 18)
+        pdf.setFillColor(HexColor('#f97316')); pdf.circle(12.5, 5, 3, fill=1, stroke=0)
+    pdf.restoreState()
+
+
+def contact_url(row, kind):
+    phone = ''.join(c for c in row['contact_phone'] if c.isdigit())
+    if phone.startswith('0'): phone = '62' + phone[1:]
+    elif phone.startswith('8'): phone = '62' + phone
+    message = (f"Halo {row.get('contact_name') or 'Bapak/Ibu'}, saya ingin menindaklanjuti "
+               f"{'kebutuhan properti' if kind == 'buyer' else 'listing properti'} yang Anda bagikan:\n\n"
+               f"{(row.get('raw_text') or row.get('normalized_text') or '')[:500]}\n\n"
+               "Apakah masih tersedia? Saya memiliki calon pasangan yang sesuai. "
+               "Boleh saya meminta informasi lebih lanjut? Terima kasih.")
+    return 'https://wa.me/' + phone + '?text=' + quote(message, safe='')
 
 
 def build_report(pairs, direction):
@@ -49,13 +89,19 @@ def build_report(pairs, direction):
                 row=source if col==0 else target
                 if row and row.get('contact_phone'):
                     phone=''.join(c for c in row['contact_phone'] if c.isdigit())
+                    if phone.startswith('0'): phone='62'+phone[1:]
+                    elif phone.startswith('8'): phone='62'+phone
                     pdf.setFillColor(HexColor('#146348'));pdf.roundRect(x+12,60,230,25,5,fill=1,stroke=0)
                     pdf.setFillColor(HexColor('#ffffff'));pdf.setFont('Helvetica-Bold',10)
                     pdf.drawString(x+22,69,'WhatsApp: +'+phone)
-                    pdf.linkURL('https://wa.me/'+phone,(x+12,60,x+242,85),relative=0)
+                    pdf.linkURL(contact_url(row, direction if col == 0 else ('property' if direction == 'buyer' else 'buyer')),(x+12,60,x+242,85),relative=0)
             pdf.setFillColor(HexColor('#53617b'));pdf.setFont('Helvetica',10)
-            status=('Hot' if float(target['score'])>=80 else 'Warm')+f" - {float(target['score']):.0f} poin" if target else 'Belum cocok'
-            pdf.drawString(32,30,status);pdf.drawRightString(810,30,f'XM Property Matchmaker | {page}')
+            if target:
+                status_badge(pdf, float(target['score']) >= 80)
+            else:
+                pdf.drawString(32,30,'Belum cocok')
+            pdf.setFillColor(HexColor('#53617b'));pdf.setFont('Helvetica',10)
+            pdf.drawRightString(810,30,f'XM Property Matchmaker | {page}')
             pdf.showPage()
     pdf.save()
     return output.getvalue()

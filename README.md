@@ -25,7 +25,9 @@ Local property matchmaking workspace for Xavier Marks. It imports WhatsApp `clea
 
 ## Matching workspace update
 
-- Switch Buyer → Property or Property → Buyer; source date/search/status filters are applied before pagination.
+- After login, choose Buyer → Property or Property → Buyer with all dates selected by default; optional Jakarta calendar presets include this month, this week (Monday–Sunday), last month, and a manual range before opening the matching workspace.
+- Both search directions use the account default `XM Darmo`. Change it in Settings and save; the workspace search field is read-only.
+- Source switches allow one active item at a time; switching another item off clears its recommendations.
 - Property contacts support multiple Indonesian phone numbers separated by commas or newlines, normalized to `62`. Matching uses bubble contact details, including alternate numbers, independently of the uploading agent.
 - Hot: score ≥80 only after recognised mandatory constraints pass; uncertain evidence or tolerances cap at 79. Warm: 60–79; Belum cocok: no stored match ≥60. Unrequested factors contribute no points. Multiple status filters can be enabled together.
 - Exact complete raw texts are grouped before pagination and in both recommendation directions. Original messages remain stored; occurrence badges expose repeats.
@@ -33,6 +35,7 @@ Local property matchmaking workspace for Xavier Marks. It imports WhatsApp `clea
 - Original-data Caesar feedback loop, regression coverage, and measured search/render checks: [docs/CAESAR_QUALITY_AUDIT.md](docs/CAESAR_QUALITY_AUDIT.md). Repeat the local evidence export with `python audit_quality.py --search caesar --output /tmp/caesar-audit.json` inside the API container; the export contains private source messages.
 - Settings and location glossary are stored in PostgreSQL. Save & reprocess queues a durable maintenance job; the worker reparses original messages, updates Qdrant, and recomputes matches. Progress survives leaving/reopening the page.
 - Advertising phrases with concrete stock details no longer override listing intent. Contact signatures are extracted separately and excluded from structured locations, searchable matching text, and embeddings.
+- Hot/Warm scores are presented as fire/thermometer icons. PDF badges use rounded red/orange backgrounds; WhatsApp links prefill an Indonesian follow-up message.
 - Select individual result pairs (or unmatched sources) to download a landscape PDF, with the same website logo, Jakarta generation date, and clickable WhatsApp contacts. Maximum 200 report pairs from 50 sources per export.
 - Regression checks: `python3 -m unittest discover -s api -p 'test_*.py'`.
 - Existing local services remain at http://127.0.0.1:9004. The Python/PostgreSQL/Qdrant stack is hosted through Docker Compose; the starter `.openai/hosting.json` has no registered cloud Site.

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { addMonths, format, isSameDay, startOfMonth, subMonths } from 'date-fns';
+import { addMonths, endOfMonth, endOfWeek, format, isSameDay, startOfMonth, startOfWeek, subMonths } from 'date-fns';
 import { id } from 'date-fns/locale';
 import { CalendarDays } from 'lucide-react';
 import { Calendar } from '@/components/ui/calendar';
@@ -94,9 +94,19 @@ export default function DateFilter({ value, onChange, direction }: { value: Date
     </FocusableDay>;
   }, [counts, direction]);
 
+  // Calendar presets follow Jakarta dates, regardless of the device timezone.
+  const todayWib = parseDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()));
+  const lastMonth = subMonths(todayWib, 1);
+  const presets = [
+    { label: 'Semua tanggal', value: empty },
+    { label: 'Bulan ini', value: { ...empty, from: dayKey(startOfMonth(todayWib)), to: dayKey(endOfMonth(todayWib)) } },
+    { label: 'Minggu ini', value: { ...empty, from: dayKey(startOfWeek(todayWib, { weekStartsOn: 1 })), to: dayKey(endOfWeek(todayWib, { weekStartsOn: 1 })) } },
+    { label: 'Bulan lalu', value: { ...empty, from: dayKey(startOfMonth(lastMonth)), to: dayKey(endOfMonth(lastMonth)) } },
+  ];
+  const activePreset = presets.find(preset => Object.entries(preset.value).every(([key, entry]) => value[key as keyof DateFilterValue] === entry));
   const label = value.from ? `${format(parseDate(value.from),'d MMM yyyy',{locale:id})}${value.to && value.to !== value.from ? ` – ${format(parseDate(value.to),'d MMM yyyy',{locale:id})}` : ''}` : 'Semua tanggal';
-  return <div className="text-[13px] font-medium text-slate-600"><span className="block pb-1">Tanggal posting</span><Popover open={open} onOpenChange={changeOpen}>
-    <PopoverTrigger render={<Button variant="outline" className="h-10 rounded-xl bg-white" aria-label={`Filter tanggal: ${label}`} />}><CalendarDays className="size-4" />{label}</PopoverTrigger>
+  return <div className="text-[13px] font-medium text-slate-600"><span className="block pb-2">Tanggal posting</span><div className="mb-3 flex flex-wrap gap-2">{presets.map(preset => <Button key={preset.label} type="button" variant={activePreset?.label === preset.label ? 'default' : 'outline'} aria-pressed={activePreset?.label === preset.label} onClick={() => { onChange({ ...preset.value }); setOpen(false); }}>{preset.label}</Button>)}</div><Popover open={open} onOpenChange={changeOpen}>
+    <PopoverTrigger render={<Button variant="outline" className="h-10 rounded-xl bg-white" aria-label={`Filter tanggal: ${label}`} />}><CalendarDays className="size-4" />{activePreset ? 'Rentang tanggal manual' : label}</PopoverTrigger>
     <PopoverContent align="end" className="w-[min(680px,calc(100vw-24px))] max-h-[90vh] overflow-y-auto rounded-2xl p-4 sm:p-5">
       <PopoverTitle className="sr-only">Pilih tanggal atau rentang tanggal</PopoverTitle>
       <div><Calendar locale={id} mode="range" month={month} onMonthChange={setMonth} numberOfMonths={countMonths} selected={selected} disabled={loadingDates || dateError || !latest ? true : { after: parseDate(latest) }} endMonth={latest ? parseDate(latest) : undefined} onSelect={() => {}} onDayClick={click} showOutsideDays={false} weekStartsOn={0} fixedWeeks
@@ -108,7 +118,7 @@ export default function DateFilter({ value, onChange, direction }: { value: Date
       <div onPointerEnter={() => setHover(null)} className="mt-2 grid grid-cols-2 gap-4 border-t border-slate-200 pt-4"><label className="text-sm font-semibold">Mulai (WIB)<input aria-label="Jam mulai" type="time" value={draft.startTime} onChange={e => setDraft(v => ({...v,startTime:e.target.value || '00:00'}))} className="mt-1 h-10 w-full rounded-lg border border-slate-200 px-3" /></label><label className="text-sm font-semibold">Sampai (WIB)<input aria-label="Jam akhir" type="time" value={draft.endTime} onChange={e => setDraft(v => ({...v,endTime:e.target.value || '23:59'}))} className="mt-1 h-10 w-full rounded-lg border border-slate-200 px-3" /></label></div>
       {invalidTimes && <p role="alert" className="text-sm text-red-600">Jam akhir tidak boleh lebih awal dari jam mulai untuk tanggal yang sama.</p>}
       <p role="status" className="mt-2 text-sm text-slate-600">{anchor && hover && !isSameDay(anchor,hover) ? `Pratinjau ${format(selected!.from!,'d MMM',{locale:id})} – ${format(selected!.to!,'d MMM yyyy',{locale:id})}. Klik untuk menetapkan rentang.` : draft.from ? `${format(parseDate(draft.from),'d MMM yyyy',{locale:id})}${draft.to !== draft.from ? ` – ${format(parseDate(draft.to),'d MMM yyyy',{locale:id})}` : ' · satu hari'}` : 'Klik satu tanggal, atau klik awal lalu akhir rentang.'}</p>
-      <div className="mt-2 flex items-center justify-between gap-2"><Button variant="ghost" onClick={() => { onChange(empty); setOpen(false); }}>Semua tanggal</Button><div className="flex gap-2"><Button variant="outline" onClick={() => setOpen(false)}>Batal</Button><Button disabled={!draft.from || invalidTimes || loadingDates || dateError || !latest || draft.to > latest} onClick={() => { onChange(draft); setOpen(false); }}>Terapkan</Button></div></div>
+      <div className="mt-2 flex items-center justify-between gap-2">{<Button variant="ghost" onClick={() => { onChange(empty); setOpen(false); }}>Semua tanggal</Button>}<div className="flex gap-2"><Button variant="outline" onClick={() => setOpen(false)}>Batal</Button><Button disabled={!draft.from || invalidTimes || loadingDates || dateError || !latest || draft.to > latest} onClick={() => { onChange(draft); setOpen(false); }}>Terapkan</Button></div></div>
     </PopoverContent>
-  </Popover></div>;
+  </Popover><p className="mt-2 text-xs font-normal text-slate-500">{activePreset?.label || 'Rentang manual'}{value.from ? ` · ${label}` : ' · Seluruh posting'}. Minggu dimulai hari Senin, mengikuti WIB.</p></div>;
 }

@@ -66,8 +66,10 @@ function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
 }
 
 function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const [defaultSearch, setDefaultSearch] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats>({ raw_messages: 0, buyer_requests: 0, listings: 0 });
   const refresh = useCallback(() => {
+    void fetch('/api/search-default').then(r => { if (!r.ok) throw new Error('settings'); return r.json() as Promise<{ search: string }>; }).then(data => setDefaultSearch(data.search)).catch(() => {});
     void fetch('/api/stats').then((response) => response.ok ? response.json() as Promise<Stats> : null).then((data) => { if (data) setStats(data); });
   }, []);
   useEffect(() => { refresh(); const timer = window.setInterval(refresh, 10_000); return () => window.clearInterval(timer); }, [refresh]);
@@ -86,7 +88,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
         <Metric icon={Users} label="Permintaan buyer" value={stats.buyer_requests} tone="indigo" />
         <Metric icon={Building2} label="Listing property" value={stats.listings} tone="cyan" />
       </section>
-      <MatchWorkspace />
+      {defaultSearch === null ? <output>Memuat pengaturan pencarian…</output> : <MatchWorkspace defaultSearch={defaultSearch} />}
     </div>
   </main>;
 }

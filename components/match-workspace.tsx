@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import DateFilter, { type DateFilterValue } from '@/components/date-filter';
+import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 
 type Direction = 'buyer' | 'property';
@@ -92,15 +93,18 @@ function RawChat({ text }: { text: string }) {
 function ContactButton({ row, label }: { row: Row; label: string }) {
   const phone = (row.contact_phone || '').replace(/\D/g, '').replace(/^0/, '62');
   if (!phone) return null;
-  return <a href={`https://wa.me/${phone}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-emerald-700 hover:underline">
+  const message = `Halo ${row.contact_name || 'Bapak/Ibu'}, saya ingin menindaklanjuti ${label.toLowerCase().includes('buyer') ? 'kebutuhan properti' : 'listing properti'} yang Anda bagikan:\n\n${structuredSummary(row) || (row.raw_text || row.normalized_text).slice(0, 500)}\n\nApakah masih tersedia? Saya memiliki calon pasangan yang sesuai. Boleh saya meminta informasi lebih lanjut? Terima kasih.`;
+  return <a href={`https://wa.me/${phone.startsWith('8') ? '62' + phone : phone}?text=${encodeURIComponent(message)}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-emerald-700 hover:underline">
     {label} <ExternalLink className="size-3.5" />
   </a>;
 }
 
-export default function MatchWorkspace() {
+export default function MatchWorkspace({ defaultSearch }: { defaultSearch: string }) {
+  const [step, setStep] = useState<1 | 2>(1);
+  const [methodChosen, setMethodChosen] = useState(false);
   const [direction, setDirection] = useState<Direction>('buyer');
   const [statuses, setStatuses] = useState<Status[]>(['hot', 'warm', 'unmatched']);
-  const [search, setSearch] = useState('');
+  const search = defaultSearch;
   const [phones, setPhones] = useState('');
   const [dates, setDates] = useState<DateFilterValue>({ from: '', to: '', startTime: '00:00', endTime: '23:59' });
   const [rows, setRows] = useState<Row[]>([]);
@@ -138,7 +142,7 @@ export default function MatchWorkspace() {
   }, [direction, statuses]);
 
   useEffect(() => {
-    if (!preferencesLoaded) return;
+    if (!preferencesLoaded || step !== 2) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
@@ -150,7 +154,7 @@ export default function MatchWorkspace() {
         .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [direction, search, phones, statuses, dates, offset, preferencesLoaded]);
+  }, [direction, search, phones, statuses, dates, offset, preferencesLoaded, step]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -179,7 +183,9 @@ export default function MatchWorkspace() {
   const exportCount = exports.filter((key) => visibleKeys.includes(key)).length;
 
   function resetSelection() { setOffset(0); setSelected([]); setGroups([]); setExports([]); }
-  function changeDirection(next: Direction) { resetSelection(); setSearch(''); setPhones(''); setDirection(next); }
+  useEffect(() => { queueMicrotask(() => { setOffset(0); setSelected([]); setGroups([]); setExports([]); }); }, [defaultSearch]);
+
+  function changeDirection(next: Direction) { setMethodChosen(true); resetSelection(); setPhones(''); setDirection(next); }
   function toggleStatus(status: Status) {
     resetSelection();
     setStatuses((current) => current.includes(status) ? current.filter((item) => item !== status) : [...current, status]);
@@ -202,21 +208,25 @@ export default function MatchWorkspace() {
     } finally { setExporting(false); }
   }
 
+  if (step === 1) return <section className="mx-auto max-w-3xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,.07)]">
+    <div className="bg-[#081735] p-6 text-white sm:p-8"><p className="text-xs font-semibold uppercase tracking-[.18em] text-cyan-300">Langkah 1 dari 2 · Persiapan</p><h1 className="mt-3 text-3xl font-semibold tracking-tight">Mulai pencocokan Anda</h1><p className="mt-3 text-sm leading-6 text-blue-100">Tentukan periode posting dan arah pencocokan untuk menemukan pasangan yang relevan.</p></div>
+    <div className="space-y-7 p-6 sm:p-8"><fieldset><legend className="text-base font-semibold">1. Pilih metode pencocokan</legend><div className="mt-3 grid gap-3 sm:grid-cols-2">{(['buyer', 'property'] as const).map(method => <button type="button" disabled={!preferencesLoaded} key={method} aria-pressed={methodChosen && direction === method} onClick={() => changeDirection(method)} className={`rounded-2xl border p-5 text-left transition ${methodChosen && direction === method ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-100' : 'border-slate-200 hover:border-blue-300'}`}><span className="block font-semibold">{method === 'buyer' ? 'Buyer → Property' : 'Property → Buyer'}</span><span className="mt-2 block text-sm leading-6 text-slate-500">{method === 'buyer' ? 'Cari listing yang sesuai kebutuhan buyer.' : 'Temukan buyer untuk listing property.'}</span></button>)}</div></fieldset>
+    <div><h2 className="mb-3 text-base font-semibold">2. Pilih periode posting</h2><DateFilter value={dates} direction={direction} onChange={setDates} /></div>
+    <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-5"><p className="text-sm text-slate-500">Pencarian default: <strong className="text-slate-700">{defaultSearch}</strong></p><Button className="h-11" disabled={!preferencesLoaded || !methodChosen || Boolean(dates.from && (!dates.to || `${dates.from}T${dates.startTime}` > `${dates.to}T${dates.endTime}`))} onClick={() => setStep(2)}>Lanjut ke pencocokan<ArrowRight className="size-4" /></Button></div></div>
+  </section>;
+
   return <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_12px_34px_rgba(15,23,42,.05)]">
     <div className="flex flex-col gap-4 border-b border-slate-200 p-4 lg:flex-row lg:items-center lg:justify-between">
-      <div><h1 className="text-xl font-semibold tracking-[-.025em]">Pencocokan buyer & property</h1><p className="mt-1 text-sm text-slate-500">Pilih {sourceLabel} di kiri, lalu bandingkan hasilnya di kanan.</p></div>
-      <div className="flex w-full rounded-xl bg-slate-100 p-1 lg:w-auto">
-        <Button className="flex-1 lg:flex-none" variant={direction === 'buyer' ? 'default' : 'ghost'} onClick={() => changeDirection('buyer')}>Buyer → Property</Button>
-        <Button className="flex-1 lg:flex-none" variant={direction === 'property' ? 'default' : 'ghost'} onClick={() => changeDirection('property')}>Property → Buyer</Button>
-      </div>
+      <div><h1 className="text-xl font-semibold tracking-[-.025em]">Pencocokan buyer & property</h1><p className="mt-1 text-xs font-semibold text-blue-700">Langkah 2 dari 2 · {direction === 'buyer' ? 'Buyer → Property' : 'Property → Buyer'} · {dates.from ? `${dates.from} — ${dates.to}` : 'Semua tanggal'}</p><p className="mt-1 text-sm text-slate-500">Pilih {sourceLabel} di kiri, lalu bandingkan hasilnya di kanan.</p></div>
+      <Button variant="outline" onClick={() => { resetSelection(); setStep(1); }}><ArrowLeft className="size-4" />Ubah tanggal & metode</Button>
     </div>
 
     <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 bg-slate-50/60 p-4">
       <label className="min-w-56 flex-1 text-[13px] font-medium text-slate-600">Cari {sourceLabel}
-        <span className="relative mt-1 block"><Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" /><input className={`${fieldClass} w-full pl-9`} value={search} onChange={(event) => { resetSelection(); setSearch(event.target.value); }} placeholder="Nama, lokasi, atau kategori…" /></span>
+        <span className="relative mt-1 block"><Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" /><input className={`${fieldClass} w-full pl-9`} value={search} readOnly aria-label={`Cari ${sourceLabel}`} title="Ubah default pencarian melalui Pengaturan, lalu simpan" /></span>
       </label>
       {direction === 'property' && <label className="min-w-64 flex-1 text-[13px] font-medium text-slate-600">Nomor kontak listing<input className={`${fieldClass} mt-1 w-full`} value={phones} onChange={(event) => { resetSelection(); setPhones(event.target.value); }} placeholder="Pisahkan beberapa nomor dengan koma" /></label>}
-      <DateFilter value={dates} direction={direction} onChange={next => { resetSelection(); setDates(next); }} />
+      <span className="text-xs text-slate-500">Ubah pencarian melalui Pengaturan → Simpan.</span>
       <div className="flex flex-wrap gap-2">
         {([['hot', 'Hot', 'bg-rose-500'], ['warm', 'Warm', 'bg-amber-500'], ['unmatched', 'Belum cocok', 'bg-slate-400']] as const).map(([status, label, dot]) => <button key={status} type="button" aria-pressed={statuses.includes(status)} className={`inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[13px] font-semibold transition ${statuses.includes(status) ? 'border-blue-200 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-500'}`} onClick={() => toggleStatus(status)}><span className={`size-2 rounded-full ${dot}`} />{label}</button>)}
       </div>
@@ -226,16 +236,16 @@ export default function MatchWorkspace() {
 
     <div className="grid min-h-[640px] xl:grid-cols-[minmax(340px,42%)_1fr]">
       <div className="border-b border-slate-200 xl:border-r xl:border-b-0">
-        <div className="flex h-14 items-center justify-between border-b border-slate-200 px-4"><p className="text-sm font-semibold capitalize">{sourceLabel} <span className="font-normal text-slate-400">· {selected.length} dipilih · maks. 50</span></p><button className="text-[13px] font-semibold text-blue-700" onClick={() => setSelected(selected.length ? [] : rows.slice(0, 50).map((row) => row.id))}>{selected.length ? 'Bersihkan' : 'Pilih semua'}</button></div>
+        <div className="flex h-14 items-center justify-between border-b border-slate-200 px-4"><p className="text-sm font-semibold capitalize">{sourceLabel} <span className="font-normal text-slate-400">· {selected.length} aktif · pilih satu</span></p><button className="text-[13px] font-semibold text-blue-700" disabled={!selected.length} onClick={() => setSelected([])}>Nonaktifkan</button></div>
         <div className="max-h-[640px] overflow-y-auto p-2">
           {loading && <p className="p-6 text-sm text-slate-500">Memuat data…</p>}
           {!loading && rows.map((row) => {
             const checked = selected.includes(row.id);
             return <article key={row.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 180px' }} className={`mb-1.5 rounded-xl border p-3.5 transition ${checked ? 'border-blue-300 bg-blue-50/70' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}>
-              <div className="flex items-start gap-3"><Checkbox id={`source-${row.id}`} checked={checked} onCheckedChange={() => setSelected((current) => current.includes(row.id) ? current.filter((id) => id !== row.id) : current.length < 50 ? [...current, row.id] : current)} />
+              <div className="flex items-start gap-3"><Switch id={`source-${row.id}`} aria-label={`Aktifkan ${row.contact_name || sourceLabel}`} checked={checked} onCheckedChange={(active) => setSelected(active ? [row.id] : [])} />
                 <div className="min-w-0 flex-1"><label htmlFor={`source-${row.id}`} className="flex cursor-pointer items-start justify-between gap-3"><span className="break-words text-sm font-semibold text-slate-900">{row.contact_name || `${sourceLabel} tanpa nama`}</span><span className="shrink-0 text-[11px] text-slate-400">{relativeDate(row.sent_at)}</span></label>
                   <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-slate-600">{structuredSummary(row) || row.raw_text}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">{Number(row.hot_count) > 0 && <Badge className="bg-rose-50 text-rose-700 hover:bg-rose-50">{row.hot_count} Hot</Badge>}{Number(row.warm_count) > 0 && <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">{row.warm_count} Warm</Badge>}{Number(row.match_count) === 0 && <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">Belum cocok</Badge>}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">{Number(row.hot_count) > 0 && <Badge className="bg-rose-50 text-rose-700 hover:bg-rose-50">{row.hot_count} 🔥</Badge>}{Number(row.warm_count) > 0 && <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">{row.warm_count} 🌡️</Badge>}{Number(row.match_count) === 0 && <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">Belum cocok</Badge>}</div>
                   <DuplicateBadge row={row} /><RawChat text={row.raw_text || row.normalized_text} />
                 </div>
               </div>
@@ -257,7 +267,7 @@ export default function MatchWorkspace() {
             <div className="space-y-2 p-3">{group.unmatched ? <div className="flex items-center gap-3 rounded-lg bg-slate-50 p-4 text-sm text-slate-600"><Checkbox aria-label="Tandai status belum cocok untuk PDF" checked={exports.includes(keyFor(group.source))} onCheckedChange={() => setExports((current) => current.includes(keyFor(group.source)) ? current.filter((key) => key !== keyFor(group.source)) : [...current, keyFor(group.source)])} />Belum ada pasangan yang lolos batas pencocokan</div> : group.recommendations.map((target) => {
               const key = keyFor(group.source, target); const hot = Number(target.score) >= 80;
               return <article key={target.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 240px' }} className="rounded-xl border border-slate-200 p-3.5"><div className="flex items-start gap-3"><Checkbox checked={exports.includes(key)} onCheckedChange={() => setExports((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])} />
-                <div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{target.contact_name || structuredSummary(target)}</p><LastSeen row={target} /><p className="mt-1 text-[13px] leading-5 text-slate-600">{structuredSummary(target)}</p></div><Badge className={hot ? 'bg-rose-50 text-rose-700 hover:bg-rose-50' : 'bg-amber-50 text-amber-700 hover:bg-amber-50'}>{hot ? 'Hot' : 'Warm'} · {Math.round(Number(target.score))} poin</Badge></div>
+                <div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{target.contact_name || structuredSummary(target)}</p><LastSeen row={target} /><p className="mt-1 text-[13px] leading-5 text-slate-600">{structuredSummary(target)}</p></div><Badge className={hot ? 'bg-rose-50 text-rose-700 hover:bg-rose-50' : 'bg-amber-50 text-amber-700 hover:bg-amber-50'}><span aria-label={hot ? 'Hot' : 'Warm'} title={hot ? 'Hot' : 'Warm'} className="text-lg">{hot ? '🔥' : '🌡️'}</span></Badge></div>
                   <div className="mt-2 flex flex-wrap gap-1.5">{target.explanation?.map((reason) => <span key={reason} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">{reason}</span>)}</div><DuplicateBadge row={target} /><RawChat text={target.raw_text || target.normalized_text} /><div className="mt-3 flex flex-wrap gap-4"><ContactButton row={group.source} label={`WhatsApp ${sourceLabel}`} /><ContactButton row={target} label={`WhatsApp ${targetLabel}`} /></div>
                 </div>
               </div></article>;
