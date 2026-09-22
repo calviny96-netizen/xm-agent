@@ -45,7 +45,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="XM Auto Audit API", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="XM Auto Audit API", version="3.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:9004", "http://localhost:9004"],

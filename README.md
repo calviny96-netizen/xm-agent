@@ -1,4 +1,4 @@
-# XM Auto Audit — v3.0
+# XM Auto Audit — v3.1
 
 Local property matchmaking workspace for Xavier Marks. It imports WhatsApp `cleaned.json` files per agent, parses each message with deterministic Python rules, stores structured records in PostgreSQL schema `xm`, indexes searchable content in Qdrant collection `xm_rag`, and exposes the results to Hermes Agent.
 
@@ -36,7 +36,7 @@ Local property matchmaking workspace for Xavier Marks. It imports WhatsApp `clea
 - Settings and location glossary are stored in PostgreSQL. Save & reprocess queues a durable maintenance job; the worker reparses original messages, updates Qdrant, and recomputes matches. Progress survives leaving/reopening the page.
 - Advertising phrases with concrete stock details no longer override listing intent. Contact signatures are extracted separately and excluded from structured locations, searchable matching text, and embeddings.
 - Hot/Warm scores always include visible text: 🔥 Hot and 🌡️ Warm. Hot cards have a red border and soft pulsing glow, respecting reduced-motion preferences. PDF badges use rounded red/orange backgrounds; WhatsApp links prefill an Indonesian follow-up message.
-- Select individual result pairs (or unmatched sources) to download a landscape PDF, with the same website logo, Jakarta generation date, and clickable WhatsApp contacts. Maximum 200 report pairs from 50 sources per export.
+- Select individual result pairs (or unmatched sources) to download an A4 portrait PDF (one selected pair per page, 11 pt body text that shrinks only when needed), with the same website logo, Jakarta generation date, and a clickable WhatsApp button only for the recommendation on the right. Maximum 200 report pairs from 50 sources per export.
 - Regression checks: `python3 -m unittest discover -s api -p 'test_*.py'`.
 - Existing local services remain at http://127.0.0.1:9004. The Python/PostgreSQL/Qdrant stack is hosted through Docker Compose; the starter `.openai/hosting.json` has no registered cloud Site.
 
@@ -48,9 +48,9 @@ Default akun admin lokal: `admin@autoaudit.id` / `secret123`. Admin memiliki pan
 
 Gunakan `scripts/backup-data.sh` untuk membuat dump PostgreSQL, snapshot Qdrant `xm_rag`, serta arsip file sumber. Panduan pemulihan tersedia di `docs/BACKUP_RESTORE.md`. Backup data sengaja tidak dilacak Git karena berisi percakapan dan nomor kontak.
 
-## Upgrade v3.0
+## Upgrade v3.1
 
-Release tag: `XM-V3.0`. See [docs/UPGRADE_V3.0.md](docs/UPGRADE_V3.0.md) for updating an existing installation while preserving its data.
+Release tag: `XM-V3.1`. See [docs/UPGRADE_V3.1.md](docs/UPGRADE_V3.1.md) for updating an existing installation while preserving its data.
 
 
 ## Admin and mobile update
@@ -70,3 +70,5 @@ Admin requests carry a selected user ID, checked against the authenticated role 
 The existing archive and its settings remain in the admin workspace; nothing is automatically copied to a new user. Upload the appropriate source JSON and location data from that user's **Data & setting** panel. Schema upgrades preserve existing records and add ownership for accounts, glossary entries, and jobs.
 
 `api/test_user_isolation.py` exercises real HTTP requests against a disposable PostgreSQL database: identical uploads in different accounts, settings/glossary/location independence, forbidden owner switches and foreign document IDs, cached and uncached results, exports, worker ownership, reindexing, and concurrent requests. Run the regression suite with `XM_TEST_DATABASE_URL` pointing only to an isolated test database.
+
+PDF layout regressions: install `api/requirements-test.txt` and run `python3 -m unittest discover -s api -p test_report.py`. These tests inspect the generated PDF for A4 size, page count, complete long text, default font size, and right-column WhatsApp links.

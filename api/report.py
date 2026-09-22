@@ -7,6 +7,7 @@ from xml.sax.saxutils import escape
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph
 from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor
 from reportlab.lib.utils import ImageReader
 
@@ -53,58 +54,102 @@ def contact_url(row, kind):
     return 'https://wa.me/' + phone + '?text=' + quote(message, safe='')
 
 
+BODY_FONT_SIZE = 11
+PAGE_WIDTH, PAGE_HEIGHT = A4
+MARGIN = 32
+COLUMN_GAP = 18
+COLUMN_WIDTH = (PAGE_WIDTH - 2 * MARGIN - COLUMN_GAP) / 2
+TEXT_WIDTH = COLUMN_WIDTH - 24
+BODY_TOP = PAGE_HEIGHT - 157
+BODY_BOTTOM = 108
+BODY_HEIGHT = BODY_TOP - BODY_BOTTOM
+
+
+def fit_paragraph(text, width=TEXT_WIDTH, height=BODY_HEIGHT):
+    """Keep the full text on one page, using 11 pt unless it needs to shrink."""
+    markup = escape(text.encode('cp1252', 'ignore').decode('cp1252')).replace('\n', '<br/>')
+
+    def measure(size):
+        style = ParagraphStyle('body', fontName='Helvetica', fontSize=size,
+                               leading=size * 1.35, textColor=HexColor('#25324b'), wordWrap='CJK')
+        paragraph = Paragraph(markup, style)
+        _, used_height = paragraph.wrap(width, height)
+        return paragraph, used_height
+
+    paragraph, used_height = measure(BODY_FONT_SIZE)
+    if used_height <= height:
+        return paragraph, used_height
+    # Fit each column independently so a long listing does not shrink its buyer.
+    # No continuation pages, clipping, or text truncation.
+    lower, upper = 0, BODY_FONT_SIZE
+    for _ in range(24):
+        size = (lower + upper) / 2
+        candidate, candidate_height = measure(size)
+        if candidate_height <= height:
+            lower = size
+            paragraph, used_height = candidate, candidate_height
+        else:
+            upper = size
+    return paragraph, used_height
+
+
 def build_report(pairs, direction):
-    output=BytesIO()
-    pdf=canvas.Canvas(output,pagesize=(842,595))
+    output = BytesIO()
+    pdf = canvas.Canvas(output, pagesize=A4)
     pdf.setTitle('XM Property Matchmaker')
-    style=ParagraphStyle('body',fontName='Helvetica',fontSize=10,leading=15,textColor=HexColor('#25324b'),wordWrap='CJK')
-    months=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
-    now=datetime.now(ZoneInfo('Asia/Jakarta'))
-    generated=f'{now.day:02d} {months[now.month-1]} {now.year}'
-    logo=Path('/assets/brand-auto-audit.png')
-    if not logo.exists(): logo=Path(__file__).resolve().parent.parent/'public/brand-auto-audit.png'
-    page=0
-    for index,(source,target) in enumerate(pairs,1):
-        texts=[source.get('raw_text') or source['normalized_text'], (target.get('raw_text') or target.get('normalized_text','')) if target else 'Belum ada kecocokan.']
-        # Escape chat markup; never interpret messages as HTML or links.
-        paragraphs=[Paragraph(escape(t.encode("cp1252", "ignore").decode("cp1252")).replace('\n','<br/>'),style) for t in texts]
-        chunks=[[p] for p in paragraphs]
-        while any(chunks):
-            page+=1
-            pdf.drawImage(ImageReader(str(logo)),32,518,width=170,height=69,mask='auto',preserveAspectRatio=True)
-            pdf.setFont('Helvetica',10);pdf.setFillColor(HexColor('#53617b'))
-            pdf.drawRightString(810,560,'Generated on: '+generated)
-            pdf.drawRightString(810,540,f'Pilihan {index} / {len(pairs)}')
-            pdf.setStrokeColor(HexColor('#dbe3ef'));pdf.line(32,510,810,510)
-            labels=['Buyer request','Property listing'] if direction=='buyer' else ['Property listing','Buyer request']
-            for col,x in enumerate([32,432]):
-                pdf.setFillColor(HexColor('#edf3fc'));pdf.roundRect(x,464,378,32,6,fill=1,stroke=0)
-                pdf.setFillColor(HexColor('#1645a0'));pdf.setFont('Helvetica-Bold',12);pdf.drawString(x+12,475,labels[col])
-                y=448
-                pending=chunks[col]
-                if pending:
-                    p=pending.pop(0);_,h=p.wrap(354,354)
-                    if h>354:
-                        parts=p.split(354,354)
-                        if parts:
-                            p=parts[0];pending[0:0]=parts[1:];_,h=p.wrap(354,354)
-                    p.drawOn(pdf,x+12,y-h)
-                row=source if col==0 else target
-                if row and row.get('contact_phone'):
-                    phone=''.join(c for c in row['contact_phone'] if c.isdigit())
-                    if phone.startswith('0'): phone='62'+phone[1:]
-                    elif phone.startswith('8'): phone='62'+phone
-                    pdf.setFillColor(HexColor('#146348'));pdf.roundRect(x+12,60,230,25,5,fill=1,stroke=0)
-                    pdf.setFillColor(HexColor('#ffffff'));pdf.setFont('Helvetica-Bold',10)
-                    pdf.drawString(x+22,69,'WhatsApp: +'+phone)
-                    pdf.linkURL(contact_url(row, direction if col == 0 else ('property' if direction == 'buyer' else 'buyer')),(x+12,60,x+242,85),relative=0)
-            pdf.setFillColor(HexColor('#53617b'));pdf.setFont('Helvetica',10)
-            if target:
-                status_badge(pdf, float(target['score']) >= 80)
-            else:
-                pdf.drawString(32,30,'Belum cocok')
-            pdf.setFillColor(HexColor('#53617b'));pdf.setFont('Helvetica',10)
-            pdf.drawRightString(810,30,f'XM Property Matchmaker | {page}')
-            pdf.showPage()
+    months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
+    now = datetime.now(ZoneInfo('Asia/Jakarta'))
+    generated = f'{now.day:02d} {months[now.month-1]} {now.year}'
+    logo = Path('/assets/brand-auto-audit.png')
+    if not logo.exists():
+        logo = Path(__file__).resolve().parent.parent / 'public/brand-auto-audit.png'
+    right = PAGE_WIDTH - MARGIN
+    labels = ['Buyer request','Property listing'] if direction == 'buyer' else ['Property listing','Buyer request']
+    for index, (source, target) in enumerate(pairs, 1):
+        pdf.drawImage(ImageReader(str(logo)), MARGIN, PAGE_HEIGHT - 77,
+                      width=170, height=69, mask='auto', preserveAspectRatio=True)
+        pdf.setFont('Helvetica', 10)
+        pdf.setFillColor(HexColor('#53617b'))
+        pdf.drawRightString(right, PAGE_HEIGHT - 35, 'Generated on: ' + generated)
+        pdf.drawRightString(right, PAGE_HEIGHT - 55, f'Pilihan {index} / {len(pairs)}')
+        pdf.setStrokeColor(HexColor('#dbe3ef'))
+        pdf.line(MARGIN, PAGE_HEIGHT - 85, right, PAGE_HEIGHT - 85)
+        texts = [source.get('raw_text') or source.get('normalized_text', ''),
+                 (target.get('raw_text') or target.get('normalized_text', '')) if target else 'Belum ada kecocokan.']
+        for col, x in enumerate([MARGIN, MARGIN + COLUMN_WIDTH + COLUMN_GAP]):
+            label_y = PAGE_HEIGHT - 142
+            pdf.setFillColor(HexColor('#edf3fc'))
+            pdf.roundRect(x, label_y, COLUMN_WIDTH, 32, 6, fill=1, stroke=0)
+            pdf.setFillColor(HexColor('#1645a0'))
+            pdf.setFont('Helvetica-Bold', 11)
+            pdf.drawString(x + 12, label_y + 11, labels[col])
+            paragraph, used_height = fit_paragraph(texts[col])
+            paragraph.drawOn(pdf, x + 12, BODY_TOP - used_height)
+
+        # Only the recommendation on the right has a WhatsApp action.
+        if target and target.get('contact_phone'):
+            x = MARGIN + COLUMN_WIDTH + COLUMN_GAP + 12
+            phone = ''.join(c for c in target['contact_phone'] if c.isdigit())
+            if phone.startswith('0'):
+                phone = '62' + phone[1:]
+            elif phone.startswith('8'):
+                phone = '62' + phone
+            pdf.setFillColor(HexColor('#146348'))
+            pdf.roundRect(x, 60, TEXT_WIDTH, 25, 5, fill=1, stroke=0)
+            pdf.setFillColor(HexColor('#ffffff'))
+            pdf.setFont('Helvetica-Bold', 11)
+            pdf.drawString(x + 10, 68, 'WhatsApp: +' + phone)
+            pdf.linkURL(contact_url(target, 'property' if direction == 'buyer' else 'buyer'),
+                        (x, 60, x + TEXT_WIDTH, 85), relative=0)
+        if target:
+            status_badge(pdf, float(target['score']) >= 80)
+        else:
+            pdf.setFillColor(HexColor('#53617b'))
+            pdf.setFont('Helvetica', 11)
+            pdf.drawString(MARGIN, 30, 'Belum cocok')
+        pdf.setFillColor(HexColor('#53617b'))
+        pdf.setFont('Helvetica', 9)
+        pdf.drawRightString(right, 30, f'XM Property Matchmaker | {index}')
+        pdf.showPage()
     pdf.save()
     return output.getvalue()
