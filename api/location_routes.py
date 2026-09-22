@@ -11,7 +11,7 @@ EMPTY = {'clusters': [], 'edges': []}
 
 
 def current(conn):
-    row = conn.execute("SELECT * FROM xm.location_indexes WHERE company_id='xm'").fetchone()
+    row = conn.execute("SELECT * FROM xm.location_indexes WHERE company_id=current_setting('xm.workspace_id')").fetchone()
     data = row['data'] if row else EMPTY
     revision = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
     return data, revision, row
@@ -77,8 +77,8 @@ def import_locations(payload: ImportLocations):
     with connect() as conn:
         # Shared with matching/reindex: a running recompute cannot observe half
         # of an import, or finish after the new import and publish stale results.
-        conn.execute('SELECT pg_advisory_xact_lock(9042026)')
-        conn.execute('SELECT pg_advisory_xact_lock(9042027)')
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_setting('xm.workspace_id'), 9042026))")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_setting('xm.workspace_id'), 9042027))")
         previous, revision, row = current(conn)
         if payload.revision != revision:
             raise HTTPException(409,'Indeks berubah. Periksa preview terbaru sebelum menyimpan.')
@@ -86,11 +86,11 @@ def import_locations(payload: ImportLocations):
         result=summary(data,previous)
         if data == previous:
             return {**result,'unchanged':True,'job':None}
-        job=conn.execute("SELECT * FROM xm.maintenance_jobs WHERE status IN ('queued','processing') LIMIT 1").fetchone()
+        job=conn.execute("SELECT * FROM xm.maintenance_jobs WHERE company_id=current_setting('xm.workspace_id') AND status IN ('queued','processing') LIMIT 1").fetchone()
         if job and job['status'] == 'processing':
             raise HTTPException(409,'Proses ulang masih berjalan. Tunggu selesai, lalu periksa penambahan kembali.')
         sources=list(dict.fromkeys([*(row['sources'] if row else []),payload.source_name]))
-        conn.execute("""INSERT INTO xm.location_indexes(company_id,data,sources) VALUES('xm',%s::jsonb,%s::jsonb)
+        conn.execute("""INSERT INTO xm.location_indexes(company_id,data,sources) VALUES(current_setting('xm.workspace_id'),%s::jsonb,%s::jsonb)
           ON CONFLICT(company_id) DO UPDATE SET data=excluded.data,sources=excluded.sources,updated_at=now()""",(json.dumps(data),json.dumps(sources)))
         if not job:
             job=conn.execute('INSERT INTO xm.maintenance_jobs(id) VALUES(%s) RETURNING *',(uuid.uuid4(),)).fetchone()

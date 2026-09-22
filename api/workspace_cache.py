@@ -1,8 +1,11 @@
 """Exact-text groups and pair counts, rebuilt atomically with matching results."""
 import re
+from search_terms import search_filter
+from tenant import workspace_id
 
 
-def refresh_workspace_cache(conn, company_id='xm'):
+def refresh_workspace_cache(conn, company_id=None):
+    company_id = company_id or workspace_id()
     conn.execute('DROP TABLE IF EXISTS pg_temp.xm_group_build')
     conn.execute('''CREATE TEMP TABLE xm_group_build ON COMMIT DROP AS
       SELECT d.id document_id,d.document_type,r.sent_at,
@@ -34,7 +37,7 @@ def refresh_workspace_cache(conn, company_id='xm'):
 
 
 def ready(conn):
-    return bool(conn.execute("SELECT 1 FROM xm.workspace_cache_state WHERE company_id='xm'").fetchone())
+    return bool(conn.execute("SELECT 1 FROM xm.workspace_cache_state WHERE company_id=current_setting('xm.workspace_id')").fetchone())
 
 
 def sources(conn, direction, search, phones, statuses, clause, date_params, offset):
@@ -51,10 +54,10 @@ def sources(conn, direction, search, phones, statuses, clause, date_params, offs
       SELECT DISTINCT ON (g.group_id) d.id,g.group_id,r.sent_at,count(*) OVER(PARTITION BY g.group_id) duplicate_count
       FROM xm.document_groups g JOIN xm.document_group_members gm ON gm.group_id=g.group_id
       JOIN xm.documents d ON d.id=gm.document_id JOIN xm.raw_messages r ON r.id=d.raw_message_id
-      WHERE g.company_id='xm' AND d.active AND g.document_type=%s AND ('''+(' OR '.join(filters) or 'false')+')'
-    if search.strip():
-        query+=" AND (d.normalized_text ILIKE %s OR coalesce(d.contact_name,'') ILIKE %s)"
-        params+=['%'+search.strip()+'%']*2
+      WHERE g.company_id=current_setting('xm.workspace_id') AND d.active AND g.document_type=%s AND ('''+(' OR '.join(filters) or 'false')+')'
+    search_clause, search_params = search_filter(search)
+    query += search_clause
+    params += search_params
     if phones.strip() and direction=='property':
         numbers=[normalize_phone(v) for v in re.split(r'[,;\n]+',phones) if v.strip()]
         if any(not n.startswith('628') or not 10<=len(n)<=15 for n in numbers):
@@ -76,11 +79,11 @@ def recommendations(conn, direction, ids):
     kind='buyer_request' if direction=='buyer' else 'property_listing'
     relation,other=('buyer_group_id','property_group_id') if direction=='buyer' else ('property_group_id','buyer_group_id')
     sources=conn.execute('''SELECT d.*,r.raw_text,r.chat_name,r.sent_at FROM xm.documents d
-      JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.id=ANY(%s) AND d.document_type=%s''',(ids,kind)).fetchall()
+      JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.id=ANY(%s) AND d.document_type=%s''',(ids,kind)).fetchall()
     rows=conn.execute(f'''SELECT s.document_id source_id,m.score,m.explanation,m.id match_id,d.*,r.raw_text,r.chat_name,r.sent_at,g.duplicate_count,g.last_seen_at
       FROM xm.document_group_members s JOIN xm.group_matches gm ON gm.{relation}=s.group_id
       JOIN xm.matches m ON m.id=gm.match_id JOIN xm.document_groups g ON g.group_id=gm.{other}
       JOIN xm.documents d ON d.id=g.group_id JOIN xm.raw_messages r ON r.id=d.raw_message_id
-      WHERE s.company_id='xm' AND s.document_id=ANY(%s) AND d.active
+      WHERE s.company_id=current_setting('xm.workspace_id') AND s.document_id=ANY(%s) AND d.active
       ORDER BY m.score DESC,g.last_seen_at DESC NULLS LAST,d.id''',(ids,)).fetchall()
     return {'groups':[{'source':s,'recommendations':[r for r in rows if r['source_id']==s['id']]} for s in sources]}

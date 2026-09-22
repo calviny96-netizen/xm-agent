@@ -174,14 +174,23 @@ CREATE TABLE IF NOT EXISTS xm.location_indexes (
  sources jsonb NOT NULL DEFAULT '[]'::jsonb,
  updated_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO xm.glossary(alias, canonical) VALUES
-('regensi','regency'),('rgcy','regency'),('nashos','national hospital'),('nathos','national hospital')
+ALTER TABLE xm.glossary ADD COLUMN IF NOT EXISTS company_id text NOT NULL DEFAULT 'xm';
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='xm.glossary'::regclass AND contype='p' AND array_length(conkey,1)=1) THEN
+  ALTER TABLE xm.glossary DROP CONSTRAINT glossary_pkey;
+  ALTER TABLE xm.glossary ADD PRIMARY KEY(company_id,alias);
+ END IF;
+END $$;
+INSERT INTO xm.glossary(company_id, alias, canonical) VALUES
+('xm','regensi','regency'),('xm','rgcy','regency'),('xm','nashos','national hospital'),('xm','nathos','national hospital')
 ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS xm.maintenance_jobs (
  id uuid PRIMARY KEY, status text NOT NULL DEFAULT 'queued', result jsonb, error text,
  created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
 );
-CREATE UNIQUE INDEX IF NOT EXISTS maintenance_one_running ON xm.maintenance_jobs ((true)) WHERE status IN ('queued','processing');
+ALTER TABLE xm.maintenance_jobs ADD COLUMN IF NOT EXISTS company_id text NOT NULL DEFAULT 'xm';
+DROP INDEX IF EXISTS xm.maintenance_one_running;
+CREATE UNIQUE INDEX IF NOT EXISTS maintenance_one_running_per_workspace ON xm.maintenance_jobs(company_id) WHERE status IN ('queued','processing');
 
 ALTER TABLE xm.documents ADD COLUMN IF NOT EXISTS contact_phones text[] NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS documents_recent_idx ON xm.documents(company_id,created_at DESC) WHERE active;
@@ -210,3 +219,29 @@ CREATE TABLE IF NOT EXISTS xm.group_matches (
 );
 CREATE INDEX IF NOT EXISTS group_matches_property_idx ON xm.group_matches(property_group_id,score DESC);
 CREATE TABLE IF NOT EXISTS xm.workspace_cache_state(company_id text PRIMARY KEY,refreshed_at timestamptz NOT NULL);
+
+
+ALTER TABLE xm.users ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user'));
+ALTER TABLE xm.users ADD COLUMN IF NOT EXISTS is_locked boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS xm.app_preferences (
+ company_id text PRIMARY KEY,
+ search_terms text[] NOT NULL DEFAULT ARRAY['XM Darmo'],
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO xm.app_preferences(company_id, search_terms)
+SELECT 'xm', ARRAY[coalesce((SELECT nullif(trim(p.preferences->>'default_search'),'')
+ FROM xm.user_preferences p JOIN xm.users u ON u.id=p.user_id
+ WHERE u.email='admin@autoaudit.id'), 'XM Darmo')]
+ON CONFLICT (company_id) DO NOTHING;
+
+
+-- Preserve legacy rows under 'xm' (admin); new inserts inherit the trusted scope.
+ALTER TABLE xm.users ADD COLUMN IF NOT EXISTS workspace_id text UNIQUE;
+ALTER TABLE xm.imports ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+ALTER TABLE xm.raw_messages ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+ALTER TABLE xm.documents ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+ALTER TABLE xm.matches ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+ALTER TABLE xm.audit_events ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+ALTER TABLE xm.glossary ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+ALTER TABLE xm.maintenance_jobs ALTER COLUMN company_id SET DEFAULT current_setting('xm.workspace_id');
+CREATE INDEX IF NOT EXISTS maintenance_workspace_recent_idx ON xm.maintenance_jobs(company_id,created_at DESC);

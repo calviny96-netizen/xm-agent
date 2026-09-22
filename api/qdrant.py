@@ -5,6 +5,7 @@ import urllib.request
 import time
 
 from embedding import VECTOR_SIZE
+from tenant import workspace_id
 
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://host.docker.internal:6333").rstrip("/")
@@ -59,21 +60,22 @@ def upsert(points: list[dict]) -> int:
     return len(points)
 
 
-def status() -> dict:
+def status(include_counts=True) -> dict:
     try:
         result = _request("GET", f"/collections/{COLLECTION}", timeout=3).get("result", {})
-        return {
-            "ok": True,
-            "collection": COLLECTION,
-            "points": result.get("points_count", 0),
-            "status": result.get("status", "unknown"),
-        }
+        info = {"ok": True, "status": result.get("status", "unknown")}
+        if include_counts:
+            scoped = _request("POST", f"/collections/{COLLECTION}/points/count", {
+                "filter": {"must": [{"key": "company_id", "match": {"value": workspace_id()}}]}, "exact": True,
+            }, timeout=3).get("result", {})
+            info['points'] = scoped.get('count', 0)
+        return info
     except Exception as exc:
         return {"ok": False, "collection": COLLECTION, "error": str(exc)}
 
 
 def query(vector: list[float], document_type: str | None = None, category: str | None = None, limit: int = 10) -> list[dict]:
-    conditions = [{"key": "company_id", "match": {"value": "xm"}}, {"key": "active", "match": {"value": True}}]
+    conditions = [{"key": "company_id", "match": {"value": workspace_id()}}, {"key": "active", "match": {"value": True}}]
     if document_type:
         conditions.append({"key": "document_type", "match": {"value": document_type}})
     if category:

@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from db import connect
+from tenant import workspace_id, workspace_scope
 from embedding import embed
 from matcher import recompute_matches
 from parser import message_hash, parse_message
@@ -17,6 +18,16 @@ def _count_messages(payload: dict) -> int:
 
 
 def process_import(import_id: str) -> None:
+    # Only the worker calls this function; derive scope from the queued job itself.
+    with connect() as conn:
+        job = conn.execute('SELECT company_id FROM xm.imports WHERE id=%s', (import_id,)).fetchone()
+    if not job:
+        raise ValueError('Import tidak ditemukan')
+    with workspace_scope(job['company_id']):
+        _process_import(import_id)
+
+
+def _process_import(import_id: str) -> None:
     qdrant_batch = []
     qdrant_count = 0
     try:
@@ -36,7 +47,7 @@ def process_import(import_id: str) -> None:
         processed = int(job["processed_messages"])
         qdrant_count = int(job["qdrant_points"])
         with connect() as conn:
-            conn.execute("SELECT pg_advisory_lock(9042026)")
+            conn.execute("SELECT pg_advisory_lock(hashtextextended(current_setting('xm.workspace_id'), 9042026))")
             glossary = glossary_values(conn)
             for chat_id, chat in payload.get("chats", {}).items():
                 for position, message in enumerate(chat.get("messages", [])):
@@ -51,7 +62,7 @@ def process_import(import_id: str) -> None:
                     author = str(message[2]) if len(message) > 2 else ""
                     digest = message_hash(chat_id, timestamp, author, text)
                     previous = conn.execute(
-                        "SELECT id FROM xm.raw_messages WHERE company_id='xm' AND agent_name=%s AND message_hash=%s LIMIT 1",
+                        "SELECT id FROM xm.raw_messages WHERE company_id=current_setting('xm.workspace_id') AND agent_name=%s AND message_hash=%s LIMIT 1",
                         (job["agent_name"], digest),
                     ).fetchone()
                     parsed = parse_message(text, author, glossary)
@@ -97,7 +108,7 @@ def process_import(import_id: str) -> None:
                             "id": str(point_id),
                             "vector": embed(parsed.normalized_text),
                             "payload": {
-                                "company_id": "xm", "postgres_id": str(doc_id), "document_type": parsed.classification,
+                                "company_id": workspace_id(), "postgres_id": str(doc_id), "document_type": parsed.classification,
                                 "agent_name": job["agent_name"],
                                 "transaction_type": parsed.transaction_type, "categories": parsed.categories,
                                 "locations": parsed.locations, "active": True,

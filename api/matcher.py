@@ -2,6 +2,7 @@ import json
 import uuid
 
 from db import connect
+from tenant import workspace_id, workspace_scope
 from embedding import embed
 from qdrant import query as qdrant_query
 from matching_rules import assess_pair, prepare_document
@@ -15,9 +16,15 @@ def _near_duplicate(left_tokens: set[str], right_tokens: set[str]) -> bool:
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens) >= 0.70
 
 
-def recompute_matches(company_id: str = "xm", limit_per_request: int | None = None) -> int:
+def recompute_matches(company_id: str | None = None, limit_per_request: int | None = None) -> int:
+    company_id = company_id or workspace_id()
+    with workspace_scope(company_id):
+        return _recompute_matches(company_id, limit_per_request)
+
+
+def _recompute_matches(company_id, limit_per_request):
     with connect() as conn:
-        conn.execute("SELECT pg_advisory_xact_lock(9042026)")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_setting('xm.workspace_id'), 9042026))")
         settings = conn.execute(
             "SELECT * FROM xm.match_settings WHERE company_id = %s", (company_id,)
         ).fetchone()

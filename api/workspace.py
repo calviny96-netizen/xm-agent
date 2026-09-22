@@ -8,6 +8,8 @@ from db import connect
 from parser import normalize_phone
 from reindex import glossary_values
 from auth import current_user
+from tenant import owner_id
+from search_terms import normalize_terms, search_filter
 
 router = APIRouter()
 
@@ -45,7 +47,7 @@ def save_settings(payload: Settings):
             '''UPDATE xm.match_settings SET land_tolerance_pct=%s, building_tolerance_pct=%s,
                price_tolerance_pct=%s, location_weight_pct=%s, land_weight_pct=%s,
                building_weight_pct=%s, price_weight_pct=%s, semantic_weight_pct=%s,
-               data_quality_weight_pct=%s, updated_at=now() WHERE company_id='xm' ''',
+               data_quality_weight_pct=%s, updated_at=now() WHERE company_id=current_setting('xm.workspace_id') ''',
             tuple(payload.model_dump().values()),
         )
         conn.commit()
@@ -68,7 +70,7 @@ def get_preferences(request: Request):
     with connect() as conn:
         row = conn.execute(
             'SELECT preferences FROM xm.user_preferences WHERE user_id=%s',
-            (user['id'],),
+            (owner_id() or user['id'],),
         ).fetchone()
     return {**Preferences().model_dump(), **(row['preferences'] if row else {})}
 
@@ -80,35 +82,33 @@ def save_preferences(payload: Preferences, request: Request):
         conn.execute(
             '''INSERT INTO xm.user_preferences(user_id, preferences) VALUES(%s,%s::jsonb)
                ON CONFLICT(user_id) DO UPDATE SET preferences=xm.user_preferences.preferences || excluded.preferences, updated_at=now()''',
-            (user['id'], json.dumps(payload.model_dump())),
+            (owner_id() or user['id'], json.dumps(payload.model_dump())),
         )
         conn.commit()
     return payload
 
 class SearchDefault(BaseModel):
-    search: str = Field(default='XM Darmo', max_length=200)
+    search: str = Field(default='', max_length=4020)
+    terms: list[str] | None = Field(default=None, max_length=20)
 
 
 @router.get('/search-default')
-def get_search_default(request: Request):
-    return {'search': get_preferences(request).get('default_search', 'XM Darmo')}
+def get_search_default():
+    with connect() as conn:
+        row = conn.execute("SELECT search_terms FROM xm.app_preferences WHERE company_id=current_setting('xm.workspace_id')").fetchone()
+    terms = row['search_terms'] if row else ['XM Darmo']
+    return {'search': '\n'.join(terms), 'terms': terms}
 
 
 @router.put('/search-default')
-def save_search_default(payload: SearchDefault, request: Request):
-    user = current_user(request)
-    value = payload.search.strip()
-    if not value:
+def save_search_default(payload: SearchDefault):
+    terms = normalize_terms(payload.terms if payload.terms is not None else payload.search)
+    if not terms:
         raise HTTPException(400, 'Default pencarian wajib diisi.')
     with connect() as conn:
-        conn.execute(
-            '''INSERT INTO xm.user_preferences(user_id, preferences) VALUES(%s,%s::jsonb)
-               ON CONFLICT(user_id) DO UPDATE SET
-               preferences=xm.user_preferences.preferences || excluded.preferences, updated_at=now()''',
-            (user['id'], json.dumps({'default_search': value})),
-        )
+        conn.execute("UPDATE xm.app_preferences SET search_terms=%s,updated_at=now() WHERE company_id=current_setting('xm.workspace_id')", (terms,))
         conn.commit()
-    return {'search': value}
+    return {'search': '\n'.join(terms), 'terms': terms}
 
 
 @router.put('/glossary')
@@ -117,7 +117,7 @@ def save_glossary(payload: Glossary):
     if len(entries) > 500 or any(not k or not v or len(k)>100 or len(v)>100 for k,v in entries.items()):
         raise HTTPException(400, 'Istilah dan nama baku wajib diisi (maks. 100 karakter, 500 istilah).')
     with connect() as conn:
-        conn.execute('DELETE FROM xm.glossary')
+        conn.execute("DELETE FROM xm.glossary WHERE company_id=current_setting('xm.workspace_id')")
         for k,v in entries.items():
             conn.execute('INSERT INTO xm.glossary(alias,canonical) VALUES(%s,%s)',(k,v))
         conn.commit()
@@ -126,8 +126,8 @@ def save_glossary(payload: Glossary):
 @router.post('/index/recompute', status_code=202)
 def rebuild_index():
     with connect() as conn:
-        conn.execute('SELECT pg_advisory_xact_lock(9042027)')
-        current=conn.execute("SELECT * FROM xm.maintenance_jobs WHERE status IN ('queued','processing') LIMIT 1").fetchone()
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_setting('xm.workspace_id'), 9042027))")
+        current=conn.execute("SELECT * FROM xm.maintenance_jobs WHERE company_id=current_setting('xm.workspace_id') AND status IN ('queued','processing') LIMIT 1").fetchone()
         if current: return current
         row=conn.execute('INSERT INTO xm.maintenance_jobs(id) VALUES(%s) RETURNING *',(uuid.uuid4(),)).fetchone()
         conn.commit()
@@ -136,7 +136,7 @@ def rebuild_index():
 @router.get('/index/status')
 def index_status():
     with connect() as conn:
-        return conn.execute('SELECT * FROM xm.maintenance_jobs ORDER BY created_at DESC LIMIT 1').fetchone()
+        return conn.execute("SELECT * FROM xm.maintenance_jobs WHERE company_id=current_setting('xm.workspace_id') ORDER BY created_at DESC LIMIT 1").fetchone()
 
 def date_filter(date_from, date_to, time_from='00:00', time_to='23:59'):
     from datetime import date, time, datetime, timedelta
@@ -173,20 +173,20 @@ def workspace_dates(direction: Literal['buyer','property']='buyer', date_from: s
     with connect() as conn:
         import workspace_cache
         if workspace_cache.ready(conn):
-            latest=conn.execute("SELECT max(last_seen_at)::date latest_date FROM xm.document_groups WHERE company_id='xm' AND document_type=%s",(kind,)).fetchone()
+            latest=conn.execute("SELECT max(last_seen_at)::date latest_date FROM xm.document_groups WHERE company_id=current_setting('xm.workspace_id') AND document_type=%s",(kind,)).fetchone()
             rows=conn.execute('''SELECT r.sent_at::date posted_day,count(DISTINCT gm.group_id) count
               FROM xm.document_group_members gm JOIN xm.document_groups g ON g.group_id=gm.group_id
               JOIN xm.documents d ON d.id=gm.document_id JOIN xm.raw_messages r ON r.id=d.raw_message_id
-              WHERE g.company_id='xm' AND g.document_type=%s AND r.sent_at >= %s AND r.sent_at < %s
+              WHERE g.company_id=current_setting('xm.workspace_id') AND g.document_type=%s AND r.sent_at >= %s AND r.sent_at < %s
               GROUP BY r.sent_at::date''',(kind,start,end)).fetchall()
             return {'counts':{str(row['posted_day'])[:10]:int(row['count']) for row in rows},
                     'latest_date':str(latest['latest_date'])[:10] if latest['latest_date'] else None}
         latest=conn.execute("""SELECT max(r.sent_at)::date AS latest_date
           FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id
-          WHERE d.company_id='xm' AND d.active AND d.document_type=%s""",(kind,)).fetchone()
+          WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.document_type=%s""",(kind,)).fetchone()
         rows=conn.execute("""SELECT r.sent_at::date AS posted_day,count(DISTINCT r.raw_text) AS count
           FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id
-          WHERE d.company_id='xm' AND d.active AND d.document_type=%s
+          WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.document_type=%s
             AND r.sent_at >= %s AND r.sent_at < %s GROUP BY r.sent_at::date""",(kind,start,end)).fetchall()
     return {'counts': {str(row['posted_day'])[:10]:int(row['count']) for row in rows},
             'latest_date': str(latest['latest_date'])[:10] if latest['latest_date'] else None}
@@ -213,11 +213,11 @@ def workspace(direction: Literal['buyer','property']='buyer', search: str='', ph
     query = """WITH eligible AS (
        SELECT d.*,r.raw_text,r.chat_name,r.sent_at
        FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id
-       WHERE d.company_id='xm' AND d.active AND d.document_type=%s"""
+       WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.document_type=%s"""
     params=[kind]
-    if search.strip():
-        query += " AND (d.normalized_text ILIKE %s OR coalesce(d.contact_name,'') ILIKE %s)"
-        params += ['%'+search.strip()+'%']*2
+    search_clause, search_params = search_filter(search)
+    query += search_clause
+    params += search_params
     if phones.strip() and direction=='property':
         import re
         numbers=[normalize_phone(v) for v in re.split(r'[,;\n]+',phones) if v.strip()]
@@ -237,11 +237,11 @@ def workspace(direction: Literal['buyer','property']='buyer', search: str='', ph
     ), pairs AS (
        SELECT e.raw_text, tr.raw_text target_text, max(m.score) score
        FROM (SELECT DISTINCT raw_text FROM {'page' if all_statuses else 'eligible'}) e
-       JOIN xm.raw_messages sr ON sr.company_id='xm' AND md5(sr.raw_text)=md5(e.raw_text) AND sr.raw_text=e.raw_text
-       JOIN xm.documents source ON source.raw_message_id=sr.id AND source.company_id='xm' AND source.active
+       JOIN xm.raw_messages sr ON sr.company_id=current_setting('xm.workspace_id') AND md5(sr.raw_text)=md5(e.raw_text) AND sr.raw_text=e.raw_text
+       JOIN xm.documents source ON source.raw_message_id=sr.id AND source.company_id=current_setting('xm.workspace_id') AND source.active
            AND source.document_type='{kind}'
-       JOIN xm.matches m ON m.{relation}=source.id AND m.company_id='xm'
-       JOIN xm.documents t ON t.id=m.{other} AND t.active AND t.company_id='xm'
+       JOIN xm.matches m ON m.{relation}=source.id AND m.company_id=current_setting('xm.workspace_id')
+       JOIN xm.documents t ON t.id=m.{other} AND t.active AND t.company_id=current_setting('xm.workspace_id')
        JOIN xm.raw_messages tr ON tr.id=t.raw_message_id
        WHERE m.score>=60 GROUP BY e.raw_text,tr.raw_text
     ), counts AS (
@@ -273,7 +273,7 @@ def recommendations(payload: Batch):
         import workspace_cache
         if workspace_cache.ready(conn):
             return workspace_cache.recommendations(conn,payload.direction,ids)
-        sources=conn.execute('''SELECT d.*,r.raw_text,r.chat_name,r.sent_at FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.id=ANY(%s) AND d.document_type=%s''',(ids,kind)).fetchall()
+        sources=conn.execute('''SELECT d.*,r.raw_text,r.chat_name,r.sent_at FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.id=ANY(%s) AND d.document_type=%s''',(ids,kind)).fetchall()
         # Resolve all copies of a selected source; aggregate before rendering so
         # copies with different historic candidate edges do not lose matches.
         rows=conn.execute(f'''WITH source_copies AS (
@@ -282,11 +282,11 @@ def recommendations(payload: Batch):
           JOIN xm.raw_messages rr ON md5(rr.raw_text)=md5(cr.raw_text) AND rr.raw_text=cr.raw_text AND rr.company_id=chosen.company_id
           JOIN xm.documents copy ON copy.raw_message_id=rr.id AND copy.active
              AND copy.company_id=chosen.company_id AND copy.document_type=chosen.document_type
-          WHERE chosen.company_id='xm' AND chosen.active AND chosen.id=ANY(%s) AND chosen.document_type=%s
+          WHERE chosen.company_id=current_setting('xm.workspace_id') AND chosen.active AND chosen.id=ANY(%s) AND chosen.document_type=%s
         ) SELECT m.id match_id,s.source_id,m.score,m.explanation,d.*,r.raw_text,r.chat_name,r.sent_at
           FROM source_copies s JOIN xm.matches m ON m.{relation}=s.copy_id
           JOIN xm.documents d ON d.id=m.{other} JOIN xm.raw_messages r ON r.id=d.raw_message_id
-          WHERE m.company_id='xm' AND d.company_id='xm' AND d.active AND m.score>=60
+          WHERE m.company_id=current_setting('xm.workspace_id') AND d.company_id=current_setting('xm.workspace_id') AND d.active AND m.score>=60
           ORDER BY m.score DESC,r.sent_at DESC NULLS LAST,d.id''',(ids,kind)).fetchall()
     return {'groups':[{'source':s,'recommendations':group_identical([r for r in rows if r['source_id']==s['id']])} for s in sources]}
 

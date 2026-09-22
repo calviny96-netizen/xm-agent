@@ -15,7 +15,7 @@ def status_badge(pdf, hot):
     # Vector emoji silhouettes remain sharp and portable without emoji fonts.
     pdf.saveState()
     pdf.setFillColor(HexColor('#fee2e2' if hot else '#ffedd5'))
-    pdf.roundRect(32, 18, 48, 30, 10, fill=1, stroke=0)
+    pdf.roundRect(32, 18, 108, 30, 10, fill=1, stroke=0)
     pdf.translate(44, 22)
     if hot:
         pdf.setFillColor(HexColor('#ef4444'))
@@ -36,6 +36,9 @@ def status_badge(pdf, hot):
         pdf.setStrokeColor(HexColor('#f97316')); pdf.setLineWidth(3); pdf.line(12.5, 5, 12.5, 18)
         pdf.setFillColor(HexColor('#f97316')); pdf.circle(12.5, 5, 3, fill=1, stroke=0)
     pdf.restoreState()
+    pdf.setFont('Helvetica-Bold', 11)
+    pdf.setFillColor(HexColor('#b91c1c' if hot else '#b45309'))
+    pdf.drawString(80, 29, 'Hot' if hot else 'Warm')
 
 
 def contact_url(row, kind):

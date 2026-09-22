@@ -1,5 +1,7 @@
 'use client';
 
+import { useWorkspaceFetch } from '@/lib/workspace-context';
+
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { addMonths, endOfMonth, endOfWeek, format, isSameDay, startOfMonth, startOfWeek, subMonths } from 'date-fns';
 import { id } from 'date-fns/locale';
@@ -23,6 +25,7 @@ function FocusableDay({ focused, ...props }: ComponentProps<'button'> & { focuse
 }
 
 export default function DateFilter({ value, onChange, direction }: { value: DateFilterValue; onChange: (value: DateFilterValue) => void; direction: 'buyer' | 'property' }) {
+  const workspaceFetch = useWorkspaceFetch();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(value);
   const [anchor, setAnchor] = useState<Date | null>(null);
@@ -45,8 +48,8 @@ export default function DateFilter({ value, onChange, direction }: { value: Date
     if (!open) return;
     const controller = new AbortController();
     const query = new URLSearchParams({ direction, date_from: dayKey(month), date_to: dayKey(addMonths(month, countMonths)) });
-    setCounts({}); setLoadingDates(true); setDateError(false);
-    void fetch(`/api/workspace/dates?${query}`, { signal: controller.signal }).then(async r => {
+    queueMicrotask(() => { if (!controller.signal.aborted) { setCounts({}); setLoadingDates(true); setDateError(false); } });
+    void workspaceFetch(`/workspace/dates?${query}`, { signal: controller.signal }).then(async r => {
       if (!r.ok) throw new Error('dates');
       const data = await r.json() as { counts: Record<string, number>; latest_date: string | null };
       if (controller.signal.aborted) return;
@@ -57,7 +60,7 @@ export default function DateFilter({ value, onChange, direction }: { value: Date
       }
     }).catch(() => { if (!controller.signal.aborted) { setLoadingDates(false); setDateError(true); } });
     return () => controller.abort();
-  }, [open, month, direction, countMonths]);
+  }, [open, month, direction, countMonths, workspaceFetch, value.from]);
 
   function changeOpen(next: boolean) {
     if (next) {
@@ -117,7 +120,7 @@ export default function DateFilter({ value, onChange, direction }: { value: Date
       <p className="mt-1 text-xs text-slate-500">{loadingDates ? 'Memuat ketersediaan tanggal…' : dateError ? 'Tanggal belum berhasil dimuat. Tutup lalu buka kembali kalender.' : latest ? `Data tersedia hingga ${format(parseDate(latest),'d MMM yyyy',{locale:id})}.` : 'Belum ada data untuk dipilih.'}</p>
       <div onPointerEnter={() => setHover(null)} className="mt-2 grid grid-cols-2 gap-4 border-t border-slate-200 pt-4"><label className="text-sm font-semibold">Mulai (WIB)<input aria-label="Jam mulai" type="time" value={draft.startTime} onChange={e => setDraft(v => ({...v,startTime:e.target.value || '00:00'}))} className="mt-1 h-10 w-full rounded-lg border border-slate-200 px-3" /></label><label className="text-sm font-semibold">Sampai (WIB)<input aria-label="Jam akhir" type="time" value={draft.endTime} onChange={e => setDraft(v => ({...v,endTime:e.target.value || '23:59'}))} className="mt-1 h-10 w-full rounded-lg border border-slate-200 px-3" /></label></div>
       {invalidTimes && <p role="alert" className="text-sm text-red-600">Jam akhir tidak boleh lebih awal dari jam mulai untuk tanggal yang sama.</p>}
-      <p role="status" className="mt-2 text-sm text-slate-600">{anchor && hover && !isSameDay(anchor,hover) ? `Pratinjau ${format(selected!.from!,'d MMM',{locale:id})} – ${format(selected!.to!,'d MMM yyyy',{locale:id})}. Klik untuk menetapkan rentang.` : draft.from ? `${format(parseDate(draft.from),'d MMM yyyy',{locale:id})}${draft.to !== draft.from ? ` – ${format(parseDate(draft.to),'d MMM yyyy',{locale:id})}` : ' · satu hari'}` : 'Klik satu tanggal, atau klik awal lalu akhir rentang.'}</p>
+      <output className="block mt-2 text-sm text-slate-600">{anchor && hover && !isSameDay(anchor,hover) ? `Pratinjau ${format(selected!.from!,'d MMM',{locale:id})} – ${format(selected!.to!,'d MMM yyyy',{locale:id})}. Klik untuk menetapkan rentang.` : draft.from ? `${format(parseDate(draft.from),'d MMM yyyy',{locale:id})}${draft.to !== draft.from ? ` – ${format(parseDate(draft.to),'d MMM yyyy',{locale:id})}` : ' · satu hari'}` : 'Klik satu tanggal, atau klik awal lalu akhir rentang.'}</output>
       <div className="mt-2 flex items-center justify-between gap-2">{<Button variant="ghost" onClick={() => { onChange(empty); setOpen(false); }}>Semua tanggal</Button>}<div className="flex gap-2"><Button variant="outline" onClick={() => setOpen(false)}>Batal</Button><Button disabled={!draft.from || invalidTimes || loadingDates || dateError || !latest || draft.to > latest} onClick={() => { onChange(draft); setOpen(false); }}>Terapkan</Button></div></div>
     </PopoverContent>
   </Popover><p className="mt-2 text-xs font-normal text-slate-500">{activePreset?.label || 'Rentang manual'}{value.from ? ` · ${label}` : ' · Seluruh posting'}. Minggu dimulai hari Senin, mengikuti WIB.</p></div>;

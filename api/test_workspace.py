@@ -9,7 +9,10 @@ from unittest.mock import patch
 def connect_test_db():
     import psycopg
     from psycopg.rows import dict_row
-    return psycopg.connect(os.environ['XM_TEST_DATABASE_URL'], row_factory=dict_row)
+    conn = psycopg.connect(os.environ['XM_TEST_DATABASE_URL'], row_factory=dict_row)
+    from tenant import workspace_id
+    conn.execute("SELECT set_config('xm.workspace_id',%s,false)", (workspace_id(),))
+    return conn
 
 
 @unittest.skipUnless(os.getenv('XM_TEST_DATABASE_URL'), 'requires isolated XM_TEST_DATABASE_URL')
@@ -52,6 +55,11 @@ class WorkspaceDatabaseRegression(unittest.TestCase):
             conn.commit()
         cls.patch.stop()
 
+    def test_multiple_search_phrases_use_or(self):
+        rows = self.module.workspace(search=self.tag+' buyer 0\n'+self.tag+' buyer 204')['rows']
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(self.module.workspace(direction='property', search='no-such-term,'+self.tag)['rows']), 1)
+
     def test_group_before_pagination(self):
         first = self.module.workspace(search=self.tag)
         second = self.module.workspace(search=self.tag, offset=200)
@@ -87,6 +95,8 @@ class WorkspaceDatabaseRegression(unittest.TestCase):
     def test_cached_workspace_equivalent_to_uncached(self):
         from workspace_cache import refresh_workspace_cache
         cases=[dict(search=self.tag),dict(search=self.tag,offset=200),
+               dict(search=self.tag+' buyer 0\n'+self.tag+' buyer 1'),
+               dict(direction='property',search='does-not-exist,'+self.tag),
                dict(search=self.tag,statuses='hot'),dict(direction='property',search=self.tag),
                dict(search=self.tag,date_from='2026-09-01',date_to='2026-09-01')]
         baseline=[self.module.workspace(**args) for args in cases]

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
+from tenant import workspace_id
 
 
 def database_url() -> str:
@@ -20,8 +21,10 @@ def database_url() -> str:
 def connect():
     # Docker's shared PostgreSQL has a small /dev/shm. Concurrent parallel
     # aggregates can exhaust it on the full archive; scope this to XM sessions.
-    return psycopg.connect(database_url(), row_factory=dict_row,
+    conn = psycopg.connect(database_url(), row_factory=dict_row,
                             options='-c max_parallel_workers_per_gather=0 -c work_mem=32MB')
+    conn.execute("SELECT set_config('xm.workspace_id',%s,false)", (workspace_id(),))
+    return conn
 
 
 def ensure_schema() -> None:

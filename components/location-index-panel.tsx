@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useWorkspaceFetch } from '@/lib/workspace-context';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MapPin, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -9,14 +11,15 @@ type Cluster = { id: string; name: string; aliases: string[]; area: string; neig
 type Catalog = { clusters: Cluster[]; total: number; pairs: number; has_more: boolean; filtered_total: number; sources: string[] };
 type Preview = { clusters: number; pairs: number; new_clusters: number; new_pairs: number; new_aliases: number; revision: string };
 const field = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100';
-async function api<T = unknown>(path: string, body?: unknown, signal?: AbortSignal) {
-  const response = await fetch(`/api/location-index${path}`, { signal, ...(body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
-  const data = await response.json() as T & { detail?: string };
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Indeks lokasi tidak dapat diproses.');
-  return data;
-}
 
 export default function LocationIndexPanel({ processing, jobStatus, onImported }: { processing: boolean; jobStatus?: string; onImported: () => void }) {
+  const workspaceFetch = useWorkspaceFetch();
+  const api = useCallback(async <T = unknown,>(path: string, body?: unknown, signal?: AbortSignal) => {
+    const response = await workspaceFetch(`/location-index${path}`, { signal, ...(body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
+    const data = await response.json() as T & { detail?: string };
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Indeks lokasi tidak dapat diproses.');
+    return data;
+  }, [workspaceFetch]);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
@@ -43,16 +46,16 @@ export default function LocationIndexPanel({ processing, jobStatus, onImported }
         .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, 200);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [search, offset, version]);
+  }, [search, offset, version, api]);
 
   useEffect(() => {
     if (!selectedId) return;
     const controller = new AbortController();
-    setSelection(null);
+    queueMicrotask(() => { if (!controller.signal.aborted) setSelection(null); });
     void api<{ cluster: Cluster; neighbors: Cluster[] }>(`/neighbors?${new URLSearchParams({ cluster: selectedId })}`, undefined, controller.signal)
       .then(setSelection).catch((e: Error) => { if (e.name !== 'AbortError') setError(e.message); });
     return () => controller.abort();
-  }, [selectedId, version]);
+  }, [selectedId, version, api]);
 
   async function chooseFile(input?: File) {
     if (!input) return;
@@ -92,9 +95,9 @@ export default function LocationIndexPanel({ processing, jobStatus, onImported }
       <Button variant="outline" disabled={!text.trim() || busy} onClick={() => void inspect()}>{busy ? 'Memeriksa…' : 'Periksa penambahan'}</Button>
       {preview && <div className="space-y-2 rounded-lg bg-white p-3 text-sm"><p className="font-semibold">Siap ditambahkan</p><p>{preview.new_clusters} cluster baru · {preview.new_pairs} pasangan jarak baru · {preview.new_aliases} alias baru</p><p className="text-slate-500">Total setelah digabung: {preview.clusters} cluster dan {preview.pairs} pasangan. Data yang sama tidak digandakan. Konflik jarak ditolak.</p><Button className="w-full" disabled={busy || processing} onClick={() => void save()}>Tambahkan & proses ulang</Button></div>}
     </section>}
-    {processing && <p role="status" className="text-sm text-blue-700">Pencocokan sedang diproses ulang…</p>}
+    {processing && <output className="block text-sm text-blue-700">Pencocokan sedang diproses ulang…</output>}
     {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-    {notice && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-700">{notice.includes('antrean') && jobStatus === 'completed' ? 'Indeks tersimpan. Pencocokan selesai diperbarui.' : notice}</p>}
+    {notice && <output className="block rounded-xl bg-emerald-50 p-3 text-sm text-emerald-700">{notice.includes('antrean') && jobStatus === 'completed' ? 'Indeks tersimpan. Pencocokan selesai diperbarui.' : notice}</output>}
     <label className="block text-sm font-medium">Cari cluster, alias, atau area<input className={`${field} mt-1`} value={search} onChange={e => { setSearch(e.target.value); setOffset(0); }} /></label>
     {loading ? <p className="text-sm text-slate-500">Memuat indeks…</p> : <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-200">{catalog?.clusters.map(c => <button type="button" key={c.id} aria-pressed={selectedId === c.id} className={`block w-full border-b border-slate-100 px-3 py-2.5 text-left text-sm last:border-0 ${selectedId === c.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`} onClick={() => setSelectedId(c.id)}><span className="block font-semibold">{c.name}</span><span className="text-slate-500">{c.area ? `${c.area} · ` : ''}{c.neighbor_count} lokasi terdekat{c.aliases.length ? ` · Alias: ${c.aliases.join(', ')}` : ''}</span></button>)}{!catalog?.clusters.length && <p className="p-4 text-sm text-slate-500">Belum ada cluster untuk pencarian ini.</p>}</div>}
     <div className="flex items-center justify-between gap-2 text-sm text-slate-500"><span>{catalog?.filtered_total ?? 0} hasil</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={!offset || loading} onClick={() => setOffset(v => Math.max(0,v-30))}>Sebelumnya</Button><Button size="sm" variant="outline" disabled={!catalog?.has_more || loading} onClick={() => setOffset(v => v+30)}>Berikutnya</Button></div></div>

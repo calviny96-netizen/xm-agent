@@ -71,3 +71,16 @@ button, input { font: inherit; }
 }
 
 ::selection { background: rgba(37, 99, 235, .18); }
+
+
+@keyframes hot-soft-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(239 68 68 / 10%), 0 0 5px rgb(239 68 68 / 7%); }
+  50% { box-shadow: 0 0 0 1px rgb(239 68 68 / 25%), 0 0 14px rgb(239 68 68 / 18%); }
+}
+.hot-match { border-color: #f87171; animation: hot-soft-glow 2.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .hot-match { animation: none; box-shadow: 0 0 0 1px rgb(239 68 68 / 15%); }
+}
+@media (max-width: 639px) {
+  input, textarea, select { font-size: 16px; }
+}

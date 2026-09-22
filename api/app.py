@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from db import connect, ensure_schema
+from tenant import workspace_id, workspace_scope
 from embedding import embed
 from matcher import recompute_matches
 from parser import parse_message
@@ -44,7 +45,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="XM Auto Audit API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="XM Auto Audit API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:9004", "http://localhost:9004"],
@@ -56,9 +57,42 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
-    public_paths = {"/health", "/auth/login"}
-    if request.url.path not in public_paths and not current_user(request):
-        return JSONResponse({"detail": "Sesi login diperlukan"}, status_code=401)
+    path = request.url.path.rstrip('/') or '/'
+    public_paths = {'/health', '/auth/login'}
+    if path not in public_paths:
+        user = current_user(request)
+        if not user:
+            return JSONResponse({'detail': 'Sesi login diperlukan'}, status_code=401)
+        if user['is_locked'] and path not in {'/auth/me', '/auth/logout'}:
+            return JSONResponse({'detail': 'Akun terkunci. Hubungi admin untuk membuka.', 'code': 'account_locked'}, status_code=403)
+        user_actions = {('PUT', '/preferences'), ('POST', '/workspace/recommendations'),
+                        ('POST', '/export/pdf'), ('POST', '/buyers/recommendations/batch'),
+                        ('POST', '/auth/logout')}
+        admin_only = path.startswith('/auth/users') or (
+            request.method not in {'GET', 'HEAD', 'OPTIONS'} and (request.method, path) not in user_actions)
+        if admin_only and user['role'] != 'admin':
+            return JSONResponse({'detail': 'Hanya administrator yang dapat melakukan tindakan ini'}, status_code=403)
+        target_id = request.headers.get('X-XM-User-Id')
+        owner = user
+        if target_id:
+            try:
+                target_id = uuid.UUID(target_id)
+            except ValueError:
+                return JSONResponse({'detail': 'Akun tujuan tidak valid'}, status_code=400)
+            if str(target_id) != str(user['id']):
+                if user['role'] != 'admin':
+                    return JSONResponse({'detail': 'Anda hanya dapat mengakses workspace sendiri'}, status_code=403)
+                with connect() as conn:
+                    owner = conn.execute('SELECT id,email,workspace_id FROM xm.users WHERE id=%s', (target_id,)).fetchone()
+                if not owner:
+                    return JSONResponse({'detail': 'Akun tujuan tidak ditemukan'}, status_code=404)
+        if not owner.get('workspace_id'):
+            return JSONResponse({'detail': 'Workspace akun belum siap'}, status_code=503)
+        with workspace_scope(owner['workspace_id'], owner['id']):
+            response = await call_next(request)
+            response.headers['Cache-Control'] = 'private, no-store'
+            response.headers['Vary'] = 'Cookie, X-XM-User-Id'
+            return response
     return await call_next(request)
 
 
@@ -74,24 +108,24 @@ def health():
             postgres_ok = True
     except Exception:
         pass
-    return {"ok": postgres_ok, "postgres": postgres_ok, "qdrant": qdrant_status()}
+    return {"ok": postgres_ok, "postgres": postgres_ok, "qdrant": qdrant_status(include_counts=False)}
 
 
 _stats_lock = Lock()
-_stats_cache = None
-_stats_cached_at = 0.0
+_stats_cache = {}
 
 
 @app.get("/stats")
 def stats():
     # Multiple open tabs poll this endpoint. Share one short-lived result so
     # they do not run the same full-archive aggregates concurrently.
-    global _stats_cache, _stats_cached_at
+    key = workspace_id()
     with _stats_lock:
-        if _stats_cache is None or time.monotonic() - _stats_cached_at >= 15:
-            _stats_cache = load_stats()
-            _stats_cached_at = time.monotonic()
-        return _stats_cache
+        cached = _stats_cache.get(key)
+        if cached is None or time.monotonic() - cached[0] >= 15:
+            cached = (time.monotonic(), load_stats())
+            _stats_cache[key] = cached
+        return cached[1]
 
 
 def load_stats():
@@ -99,18 +133,18 @@ def load_stats():
     with connect() as conn:
         if workspace_cache.ready(conn):
             row = conn.execute("""SELECT
-              (SELECT count(*) FROM xm.raw_messages WHERE company_id='xm') raw_messages,
-              (SELECT count(*) FROM xm.document_groups WHERE company_id='xm' AND document_type='buyer_request') buyer_requests,
-              (SELECT count(*) FROM xm.document_groups WHERE company_id='xm' AND document_type='property_listing') listings,
-              (SELECT count(*) FROM xm.matches WHERE company_id='xm') matches,
-              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND review_status='review') needs_review""").fetchone()
+              (SELECT count(*) FROM xm.raw_messages WHERE company_id=current_setting('xm.workspace_id')) raw_messages,
+              (SELECT count(*) FROM xm.document_groups WHERE company_id=current_setting('xm.workspace_id') AND document_type='buyer_request') buyer_requests,
+              (SELECT count(*) FROM xm.document_groups WHERE company_id=current_setting('xm.workspace_id') AND document_type='property_listing') listings,
+              (SELECT count(*) FROM xm.matches WHERE company_id=current_setting('xm.workspace_id')) matches,
+              (SELECT count(*) FROM xm.documents WHERE company_id=current_setting('xm.workspace_id') AND active AND review_status='review') needs_review""").fetchone()
         else:
             row = conn.execute("""SELECT
-              (SELECT count(*) FROM xm.raw_messages WHERE company_id='xm') raw_messages,
-              (SELECT count(DISTINCT r.raw_text) FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.document_type='buyer_request') buyer_requests,
-              (SELECT count(DISTINCT r.raw_text) FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.document_type='property_listing') listings,
-              (SELECT count(*) FROM xm.matches WHERE company_id='xm') matches,
-              (SELECT count(*) FROM xm.documents WHERE company_id='xm' AND active AND review_status='review') needs_review""").fetchone()
+              (SELECT count(*) FROM xm.raw_messages WHERE company_id=current_setting('xm.workspace_id')) raw_messages,
+              (SELECT count(DISTINCT r.raw_text) FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.document_type='buyer_request') buyer_requests,
+              (SELECT count(DISTINCT r.raw_text) FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.document_type='property_listing') listings,
+              (SELECT count(*) FROM xm.matches WHERE company_id=current_setting('xm.workspace_id')) matches,
+              (SELECT count(*) FROM xm.documents WHERE company_id=current_setting('xm.workspace_id') AND active AND review_status='review') needs_review""").fetchone()
     return {**row, "qdrant": qdrant_status()}
 
 
@@ -118,7 +152,7 @@ def load_stats():
 def imports():
     with connect() as conn:
         return conn.execute(
-            "SELECT * FROM xm.imports WHERE company_id='xm' ORDER BY created_at DESC LIMIT 30"
+            "SELECT * FROM xm.imports WHERE company_id=current_setting('xm.workspace_id') ORDER BY created_at DESC LIMIT 30"
         ).fetchall()
 
 
@@ -127,7 +161,8 @@ async def upload_import(file: UploadFile = File(...), agent_name: str | None = F
     if not file.filename or not file.filename.lower().endswith(".json"):
         raise HTTPException(400, "Gunakan file JSON")
     import_id = uuid.uuid4()
-    destination = UPLOAD_DIR / f"{import_id}.json"
+    destination = UPLOAD_DIR / workspace_id() / f"{import_id}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     size = 0
     with destination.open("wb") as output:
@@ -151,7 +186,7 @@ async def upload_import(file: UploadFile = File(...), agent_name: str | None = F
         raise HTTPException(400, f"Format JSON tidak dikenali: {exc}") from exc
     with connect() as conn:
         existing = conn.execute(
-            "SELECT id, status FROM xm.imports WHERE company_id='xm' AND agent_name=%s AND file_sha256=%s",
+            "SELECT id, status FROM xm.imports WHERE company_id=current_setting('xm.workspace_id') AND agent_name=%s AND file_sha256=%s",
             (resolved_agent, digest.hexdigest()),
         ).fetchone()
         if existing:
@@ -171,7 +206,7 @@ def documents(document_type: str | None = None, limit: int = 50, offset: int = 0
     query = """
       SELECT d.*, r.chat_name, r.sent_at, r.raw_text, r.author
       FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id
-      WHERE d.company_id='xm' AND d.active
+      WHERE d.company_id=current_setting('xm.workspace_id') AND d.active
     """
     params = []
     if document_type in {"buyer_request", "property_listing"}:
@@ -195,7 +230,7 @@ def matches(limit: int = 50):
             FROM xm.matches m
             JOIN xm.documents br ON br.id=m.buyer_request_id
             JOIN xm.documents pl ON pl.id=m.property_listing_id
-            WHERE m.company_id='xm'
+            WHERE m.company_id=current_setting('xm.workspace_id')
             ORDER BY m.score DESC LIMIT %s
             """, (min(max(limit, 1), 200),)
         ).fetchall()
@@ -223,7 +258,7 @@ def buyers(
       FROM xm.documents d
       JOIN xm.raw_messages r ON r.id=d.raw_message_id
       LEFT JOIN xm.matches m ON m.buyer_request_id=d.id
-      WHERE d.company_id='xm' AND d.document_type='buyer_request' AND d.active
+      WHERE d.company_id=current_setting('xm.workspace_id') AND d.document_type='buyer_request' AND d.active
     """
     params = []
     if search:
@@ -255,7 +290,7 @@ def buyer_recommendations(buyer_id: uuid.UUID, limit: int = 50):
         buyer = conn.execute(
             """SELECT d.*, r.chat_name, r.sent_at, r.author, r.raw_text
                FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id
-               WHERE d.id=%s AND d.company_id='xm' AND d.document_type='buyer_request'""",
+               WHERE d.id=%s AND d.company_id=current_setting('xm.workspace_id') AND d.document_type='buyer_request'""",
             (buyer_id,),
         ).fetchone()
         if not buyer:
@@ -272,7 +307,7 @@ def buyer_recommendations(buyer_id: uuid.UUID, limit: int = 50):
                FROM xm.matches m
                JOIN xm.documents pl ON pl.id=m.property_listing_id
                JOIN xm.raw_messages raw ON raw.id=pl.raw_message_id
-               WHERE m.company_id='xm' AND m.buyer_request_id=%s AND m.score >= 60
+               WHERE m.company_id=current_setting('xm.workspace_id') AND m.buyer_request_id=%s AND m.score >= 60
                ORDER BY m.score DESC LIMIT %s""",
             (buyer_id, min(max(limit, 1), 100)),
         ).fetchall()
@@ -294,7 +329,7 @@ def batch_buyer_recommendations(payload: BuyerBatchRequest):
             """SELECT d.id, d.agent_name, d.categories, d.locations, d.contact_name, d.contact_phone,
                       d.normalized_text, r.raw_text, r.chat_name, r.sent_at
                FROM xm.documents d JOIN xm.raw_messages r ON r.id=d.raw_message_id
-               WHERE d.id = ANY(%s::uuid[]) AND d.company_id='xm'
+               WHERE d.id = ANY(%s::uuid[]) AND d.company_id=current_setting('xm.workspace_id')
                  AND d.document_type='buyer_request'""",
             ([str(item) for item in buyer_ids],),
         ).fetchall()
@@ -302,7 +337,7 @@ def batch_buyer_recommendations(payload: BuyerBatchRequest):
             """WITH ranked AS (
                  SELECT m.*, row_number() OVER (PARTITION BY m.buyer_request_id ORDER BY m.score DESC) AS rank
                  FROM xm.matches m
-                 WHERE m.company_id='xm' AND m.buyer_request_id = ANY(%s::uuid[]) AND m.score >= 60
+                 WHERE m.company_id=current_setting('xm.workspace_id') AND m.buyer_request_id = ANY(%s::uuid[]) AND m.score >= 60
                )
                SELECT ranked.buyer_request_id, ranked.id, ranked.score, ranked.location_score,
                       ranked.land_score, ranked.building_score, ranked.price_score,
@@ -332,7 +367,7 @@ def batch_buyer_recommendations(payload: BuyerBatchRequest):
 @app.get("/settings")
 def get_settings():
     with connect() as conn:
-        return conn.execute("SELECT * FROM xm.match_settings WHERE company_id='xm'").fetchone()
+        return conn.execute("SELECT * FROM xm.match_settings WHERE company_id=current_setting('xm.workspace_id')").fetchone()
 
 
 @app.post("/matches/recompute")
@@ -344,7 +379,9 @@ def recompute():
 def agent_search(q: str, document_type: str | None = None, limit: int = 10):
     if len(q.strip()) < 3:
         raise HTTPException(400, "Pertanyaan terlalu pendek")
-    parsed = parse_message(q)
+    from reindex import glossary_values
+    with connect() as conn:
+        parsed = parse_message(q, glossary=glossary_values(conn))
     category = parsed.categories[0] if len(parsed.categories) == 1 else None
     try:
         hits = qdrant_query(embed(q), document_type=document_type, category=category, limit=limit)
@@ -356,14 +393,14 @@ def agent_search(q: str, document_type: str | None = None, limit: int = 10):
         if ids:
             rows = conn.execute(
                 """SELECT d.*, r.chat_name, r.sent_at, r.raw_text, r.author FROM xm.documents d
-                   JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id='xm' AND d.active AND d.id = ANY(%s::uuid[])""", (ids,)
+                   JOIN xm.raw_messages r ON r.id=d.raw_message_id WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND d.id = ANY(%s::uuid[])""", (ids,)
             ).fetchall()
         else:
             term = f"%{q.strip()}%"
             rows = conn.execute(
                 """SELECT d.*, r.chat_name, r.sent_at, r.raw_text, r.author FROM xm.documents d
                    JOIN xm.raw_messages r ON r.id=d.raw_message_id
-                   WHERE d.company_id='xm' AND d.active AND (%s IS NULL OR d.document_type=%s)
+                   WHERE d.company_id=current_setting('xm.workspace_id') AND d.active AND (%s::text IS NULL OR d.document_type=%s)
                      AND (d.normalized_text ILIKE %s OR %s = ANY(d.categories))
                    ORDER BY d.created_at DESC LIMIT %s""",
                 (document_type, document_type, term, category or "", min(limit, 50)),
@@ -381,7 +418,7 @@ def agent_matches(contact: str | None = None, min_score: float = 60, limit: int 
                          pl.contact_name listing_contact, pl.normalized_text property_listing
                   FROM xm.matches m JOIN xm.documents br ON br.id=m.buyer_request_id
                   JOIN xm.documents pl ON pl.id=m.property_listing_id
-                  WHERE m.company_id='xm' AND m.score >= %s"""
+                  WHERE m.company_id=current_setting('xm.workspace_id') AND m.score >= %s"""
         if contact:
             term = f"%{contact}%"
             rows = conn.execute(

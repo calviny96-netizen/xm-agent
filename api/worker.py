@@ -2,6 +2,7 @@ import os
 import time
 
 from db import connect, ensure_schema
+from tenant import workspace_scope
 from ingest import process_import
 
 
@@ -10,7 +11,7 @@ def claim_job():
         row = conn.execute(
             """
             SELECT id FROM xm.imports
-            WHERE company_id='xm' AND status='queued'
+            WHERE status='queued'
             ORDER BY created_at
             FOR UPDATE SKIP LOCKED LIMIT 1
             """
@@ -27,13 +28,14 @@ def process_maintenance():
     from reindex import reindex_documents
     from matcher import recompute_matches
     with connect() as conn:
-        row=conn.execute("SELECT id FROM xm.maintenance_jobs WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1").fetchone()
+        row=conn.execute("SELECT id,company_id FROM xm.maintenance_jobs WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1").fetchone()
         if not row: return False
         conn.execute("UPDATE xm.maintenance_jobs SET status='processing' WHERE id=%s",(row['id'],))
         conn.commit()
     try:
-        count=reindex_documents()
-        matches=recompute_matches()
+        with workspace_scope(row['company_id']):
+            count=reindex_documents()
+            matches=recompute_matches()
         with connect() as conn:
             conn.execute("UPDATE xm.maintenance_jobs SET status='completed',result=%s::jsonb,finished_at=now() WHERE id=%s",(json.dumps({'documents':count,'matches':matches}),row['id']))
             conn.commit()

@@ -1,7 +1,9 @@
 'use client';
 
+import { useWorkspaceFetch } from '@/lib/workspace-context';
+
 import { FileJson, FileSpreadsheet, LogOut, RefreshCw, Settings2, UploadCloud } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -24,14 +26,6 @@ const labels: Array<[keyof Settings, string]> = [
   ['price_weight_pct', 'Harga'], ['semantic_weight_pct', 'Kemiripan teks'], ['data_quality_weight_pct', 'Kualitas data'],
 ];
 
-async function api(path: string, init?: RequestInit) {
-  const response = await fetch(`/api${path}`, init);
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as { detail?: string };
-    throw new Error(body.detail || 'Permintaan gagal. Silakan coba lagi.');
-  }
-  return response;
-}
 
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -77,7 +71,16 @@ function prepareCsv(fileName: string, text: string): CsvPreview {
   return { fileName, rows: entries, invalid, duplicates };
 }
 
-export default function SettingsDrawer({ email, onLogout, onDataChanged }: { email: string; onLogout: () => void; onDataChanged: () => void }) {
+export default function SettingsDrawer({ email, onLogout, onDataChanged, initiallyOpen = false }: { email: string; onLogout: () => void; onDataChanged: () => void; initiallyOpen?: boolean }) {
+  const workspaceFetch = useWorkspaceFetch();
+  const api = useCallback(async (path: string, init?: RequestInit) => {
+    const response = await workspaceFetch(path, init);
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { detail?: string };
+      throw new Error(body.detail || 'Permintaan gagal. Silakan coba lagi.');
+    }
+    return response;
+  }, [workspaceFetch]);
   const [searchDefault, setSearchDefault] = useState('');
   const [savedSearchDefault, setSavedSearchDefault] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -104,7 +107,7 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
       setGlossary(Object.entries(entries));
       setImports(nextImports);
     }).catch((reason: Error) => setError(reason.message));
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     let stopped = false;
@@ -121,7 +124,7 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
     void poll();
     const timer = window.setInterval(poll, 5000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [onDataChanged]);
+  }, [onDataChanged, api]);
 
   const processing = job?.status === 'queued' || job?.status === 'processing';
   const weightTotal = settings ? labels.reduce((sum, [key]) => sum + Number(settings[key]), 0) : 0;
@@ -183,15 +186,15 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
   }
 
   return <>
-    <Sheet>
+    <Sheet defaultOpen={initiallyOpen}>
       <SheetTrigger render={<Button variant="outline" size="icon" aria-label="Buka pengaturan" />}><Settings2 className="size-4" /></SheetTrigger>
       <SheetContent className="w-full sm:max-w-[520px]">
-        <SheetHeader className="border-b border-slate-200 px-5 py-4"><SheetTitle>Pengaturan</SheetTitle><SheetDescription>Tersimpan untuk akun {email}</SheetDescription></SheetHeader>
+        <SheetHeader className="border-b border-slate-200 px-5 py-4"><SheetTitle>Pengaturan</SheetTitle><SheetDescription>Khusus akun {email} · Data dan pengaturan terisolasi</SheetDescription></SheetHeader>
         <Tabs defaultValue="matching" className="min-h-0 flex-1 overflow-hidden px-5 pb-5">
           <TabsList className="mt-1 grid h-auto w-full grid-cols-2 gap-1"><TabsTrigger value="matching">Pencocokan</TabsTrigger><TabsTrigger value="locations">Indeks lokasi</TabsTrigger><TabsTrigger value="source">Sumber data</TabsTrigger><TabsTrigger value="account">Akun</TabsTrigger></TabsList>
           <TabsContent value="locations" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1"><LocationIndexPanel processing={processing} jobStatus={job?.status} onImported={() => { onDataChanged(); void api('/index/status').then(r => r.json() as Promise<typeof job>).then(setJob).catch(() => {}); }} /></TabsContent>
           <TabsContent value="matching" className="mt-5 max-h-[calc(100vh-150px)] space-y-6 overflow-y-auto pr-1">
-            <section className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4"><h3 className="text-sm font-semibold">Default pencarian</h3><p className="mt-1 text-[13px] leading-5 text-slate-500">Otomatis mengisi pencarian Buyer → Property dan Property → Buyer. Perubahan berlaku setelah disimpan.</p><label className="mt-3 block text-sm font-medium">Nama / kata pencarian<input className={`${fieldClass} mt-1`} disabled={savedSearchDefault === null} value={searchDefault} maxLength={200} onChange={event => setSearchDefault(event.target.value)} /></label><Button className="mt-3 w-full" disabled={savedSearchDefault === null || !searchDefault.trim() || searchDefault.trim() === savedSearchDefault || !!busy} onClick={async () => {
+            <section className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4"><h3 className="text-sm font-semibold">Default pencarian</h3><p className="mt-1 text-[13px] leading-5 text-slate-500">Berlaku hanya untuk akun ini, di kedua arah pencocokan. Masukkan satu frasa per baris atau pisahkan dengan koma. Hasil ditampilkan jika salah satu frasa cocok.</p><label className="mt-3 block text-sm font-medium">Kata / frasa pencarian<textarea className="mt-1 min-h-28 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm" disabled={savedSearchDefault === null} value={searchDefault} maxLength={4020} placeholder={"XM Darmo\nXM Citraland"} onChange={event => setSearchDefault(event.target.value)} /><span className="mt-1 block text-xs font-normal text-slate-500">Maksimal 20 frasa · masing-masing 200 karakter</span></label><Button className="mt-3 w-full" disabled={savedSearchDefault === null || !searchDefault.trim() || searchDefault.trim() === savedSearchDefault || !!busy} onClick={async () => {
               setBusy('Menyimpan default…'); setError(''); setNotice('');
               try { const data = await (await api('/search-default', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ search: searchDefault }) })).json() as { search: string }; setSearchDefault(data.search); setSavedSearchDefault(data.search); setNotice('Default pencarian tersimpan.'); onDataChanged(); }
               catch (reason) { setError(reason instanceof Error ? reason.message : 'Gagal menyimpan default'); }
@@ -201,7 +204,7 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
               <section><h3 className="text-sm font-semibold">Toleransi requirement</h3><p className="mt-1 text-[13px] leading-5 text-slate-500">Di luar toleransi tidak direkomendasikan. Dalam toleransi atau data belum lengkap: maksimal Warm.</p><div className="mt-3 grid grid-cols-3 gap-3">{([['land_tolerance_pct', 'LT'], ['building_tolerance_pct', 'LB'], ['price_tolerance_pct', 'Harga']] as const).map(([key, label]) => <label key={key} className="text-[13px] font-medium text-slate-600">{label} (%)<input type="number" min="0" max="100" className={`${fieldClass} mt-1`} value={settings[key]} disabled={processing} onChange={(event) => { setSettings({ ...settings, [key]: Number(event.target.value) }); setDirty(true); }} /></label>)}</div></section>
               <section><div className="flex items-end justify-between"><div><h3 className="text-sm font-semibold">Bobot score</h3><p className="mt-1 text-[13px] text-slate-500">Bobot digunakan setelah syarat wajib lolos. Kebutuhan yang tidak dibatasi tidak menambah skor.</p></div><Badge className={weightTotal === 100 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}>Total {weightTotal}%</Badge></div><div className="mt-3 grid grid-cols-2 gap-3">{labels.map(([key, label]) => <label key={key} className="text-[13px] font-medium text-slate-600">{label} (%)<input type="number" min="0" max="100" className={`${fieldClass} mt-1`} value={settings[key]} disabled={processing} onChange={(event) => { setSettings({ ...settings, [key]: Number(event.target.value) }); setDirty(true); }} /></label>)}</div></section>
               <section><div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold">Glosarium</h3><p className="mt-1 text-[13px] text-slate-500">Kolom kiri dibakukan menjadi istilah di kanan.</p></div><input ref={csvInput} type="file" accept=".csv,text/csv" className="hidden" onChange={(event) => void chooseCsv(event.target.files?.[0])} /><Button variant="outline" size="sm" disabled={processing} onClick={() => csvInput.current?.click()}><FileSpreadsheet className="size-4" />Upload CSV</Button></div>
-                <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-xl bg-slate-50 p-2">{glossary.map(([alias, canonical], index) => <div key={`${index}-${alias}`} className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2"><input aria-label={`Istilah ${index + 1}`} className={fieldClass} value={alias} onChange={(event) => { setGlossary(glossary.map((entry, current) => current === index ? [event.target.value, entry[1]] : entry)); setDirty(true); }} /><span className="text-slate-400">→</span><input aria-label={`Nama baku ${index + 1}`} className={fieldClass} value={canonical} onChange={(event) => { setGlossary(glossary.map((entry, current) => current === index ? [entry[0], event.target.value] : entry)); setDirty(true); }} /><Button variant="ghost" size="sm" onClick={() => { setGlossary(glossary.filter((_, current) => current !== index)); setDirty(true); }}>Hapus</Button></div>)}</div>
+                <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-xl bg-slate-50 p-2">{glossary.map(([alias, canonical], index) => <div key={index} className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2"><input aria-label={`Istilah ${index + 1}`} className={fieldClass} value={alias} onChange={(event) => { setGlossary(glossary.map((entry, current) => current === index ? [event.target.value, entry[1]] : entry)); setDirty(true); }} /><span className="text-slate-400">→</span><input aria-label={`Nama baku ${index + 1}`} className={fieldClass} value={canonical} onChange={(event) => { setGlossary(glossary.map((entry, current) => current === index ? [entry[0], event.target.value] : entry)); setDirty(true); }} /><Button variant="ghost" size="sm" onClick={() => { setGlossary(glossary.filter((_, current) => current !== index)); setDirty(true); }}>Hapus</Button></div>)}</div>
                 <Button className="mt-2" variant="outline" size="sm" onClick={() => { setGlossary([...glossary, ['', '']]); setDirty(true); }}>Tambah istilah</Button>
               </section>
               {processing && <output className="block rounded-xl bg-blue-50 p-3 text-[13px] text-blue-700"><RefreshCw className="mr-2 inline size-3.5 animate-spin" />{job?.status === 'queued' ? 'Menunggu antrean' : 'Memproses ulang seluruh data'}…</output>}
@@ -216,7 +219,7 @@ export default function SettingsDrawer({ email, onLogout, onDataChanged }: { ema
             <section><h3 className="text-sm font-semibold">Upload terakhir</h3><div className="mt-2 space-y-2">{imports.slice(0, 6).map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl border border-slate-200 p-3"><FileJson className="size-4 text-blue-700" /><div className="min-w-0 flex-1"><p className="truncate text-[13px] font-semibold">{item.file_name}</p><p className="text-xs text-slate-500">{item.agent_name} · {new Date(item.created_at).toLocaleDateString('id-ID')}</p></div><Badge variant="outline">{item.status}</Badge></div>)}</div></section>
             {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-[13px] text-red-700">{error}</p>}{notice && <output className="block rounded-xl bg-emerald-50 p-3 text-[13px] text-emerald-700">{notice}</output>}
           </TabsContent>
-          <TabsContent value="account" className="mt-5"><div className="rounded-xl border border-slate-200 p-4"><p className="text-sm font-semibold">{email}</p><p className="mt-1 text-[13px] text-slate-500">Sesi login berlaku selama 7 hari pada perangkat ini.</p><Button variant="outline" className="mt-5 w-full text-red-700" onClick={onLogout}><LogOut className="size-4" />Keluar</Button></div></TabsContent>
+          <TabsContent value="account" className="mt-5"><div className="rounded-xl border border-slate-200 p-4"><p className="text-sm font-semibold">{email}</p><p className="mt-1 text-[13px] text-slate-500">Semua perubahan di panel ini hanya berlaku untuk akun yang sedang dikelola. Tombol keluar mengakhiri sesi admin Anda.</p><Button variant="outline" className="mt-5 w-full text-red-700" onClick={onLogout}><LogOut className="size-4" />Keluar</Button></div></TabsContent>
         </Tabs>
       </SheetContent>
     </Sheet>

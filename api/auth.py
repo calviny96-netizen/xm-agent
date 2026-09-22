@@ -6,9 +6,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+from psycopg.errors import UniqueViolation
 
 from db import connect
+from tenant import provision_workspace
 
 
 router = APIRouter(prefix="/auth")
@@ -42,16 +44,23 @@ def _password_matches(password: str, encoded: str) -> bool:
 
 def seed_admin() -> None:
     email = os.getenv("XM_ADMIN_EMAIL", "admin@autoaudit.id").strip().lower()
-    password = os.getenv("XM_ADMIN_PASSWORD", "admin")
+    password = os.getenv("XM_ADMIN_PASSWORD", "secret123")
     with connect() as conn:
-        conn.execute(
+        migrated = conn.execute(
             """
-            INSERT INTO xm.users(id, email, display_name, password_hash)
-            VALUES (%s, %s, 'Administrator', %s)
-            ON CONFLICT (email) DO NOTHING
+            INSERT INTO xm.users(id, email, display_name, password_hash, role)
+            VALUES (%s, %s, 'Administrator', %s, 'admin')
+            ON CONFLICT (email) DO UPDATE SET role='admin', password_hash=excluded.password_hash,
+                is_locked=false WHERE xm.users.role != 'admin'
+            RETURNING id
             """,
             (uuid.uuid4(), email, _password_hash(password)),
-        )
+        ).fetchone()
+        if migrated:
+            conn.execute('DELETE FROM xm.sessions WHERE user_id=%s', (migrated['id'],))
+        # Backfill ownership after promotion so the existing archive stays with admin.
+        for user in conn.execute('SELECT id,email,role FROM xm.users').fetchall():
+            provision_workspace(conn, user['id'], legacy=user['email'] == email and user['role'] == 'admin')
         conn.commit()
 
 
@@ -63,7 +72,7 @@ def current_user(request: Request):
     with connect() as conn:
         return conn.execute(
             """
-            SELECT u.id, u.email, u.display_name
+            SELECT u.id, u.email, u.display_name, u.role, u.is_locked, u.workspace_id
             FROM xm.sessions s JOIN xm.users u ON u.id=s.user_id
             WHERE s.token_hash=%s AND s.expires_at > now()
             """,
@@ -95,7 +104,7 @@ def login(payload: LoginRequest, response: Response):
         secure=os.getenv("XM_COOKIE_SECURE", "0") == "1",
         path="/",
     )
-    return {"id": user["id"], "email": user["email"], "display_name": user["display_name"]}
+    return public_user(user)
 
 
 @router.get("/me")
@@ -118,3 +127,65 @@ def logout(request: Request, response: Response):
             conn.commit()
     response.delete_cookie(COOKIE_NAME, path="/")
 
+
+
+def public_user(user):
+    return {key: user[key] for key in ('id', 'email', 'display_name', 'role', 'is_locked')}
+
+
+class CreateUser(BaseModel):
+    email: EmailStr
+    display_name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class UpdateUser(BaseModel):
+    email: EmailStr
+    display_name: str = Field(min_length=1, max_length=100)
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+    is_locked: bool = False
+
+
+@router.get('/users')
+def list_users():
+    with connect() as conn:
+        return conn.execute('SELECT id,email,display_name,role,is_locked,created_at FROM xm.users ORDER BY created_at').fetchall()
+
+
+@router.post('/users', status_code=201)
+def create_user(payload: CreateUser):
+    if not payload.display_name.strip():
+        raise HTTPException(400, 'Nama wajib diisi')
+    try:
+        with connect() as conn:
+            user = conn.execute("""INSERT INTO xm.users(id,email,display_name,password_hash)
+                VALUES(%s,%s,%s,%s) RETURNING *""",
+                (uuid.uuid4(), payload.email.strip().lower(), payload.display_name.strip(), _password_hash(payload.password))).fetchone()
+            provision_workspace(conn, user['id'])
+            conn.commit()
+            return public_user(user)
+    except UniqueViolation:
+        raise HTTPException(409, 'Email sudah terdaftar')
+
+
+@router.put('/users/{user_id}')
+def update_user(user_id: uuid.UUID, payload: UpdateUser):
+    if not payload.display_name.strip():
+        raise HTTPException(400, 'Nama wajib diisi')
+    try:
+        with connect() as conn:
+            user = conn.execute('SELECT * FROM xm.users WHERE id=%s FOR UPDATE', (user_id,)).fetchone()
+            if not user:
+                raise HTTPException(404, 'Akun tidak ditemukan')
+            if user['role'] == 'admin':
+                raise HTTPException(400, 'Akun administrator utama tidak dapat diubah melalui manajemen user')
+            email = payload.email.strip().lower()
+            updated = conn.execute("""UPDATE xm.users SET email=%s,display_name=%s,is_locked=%s,password_hash=%s
+                WHERE id=%s RETURNING *""", (email, payload.display_name.strip(), payload.is_locked,
+                _password_hash(payload.password) if payload.password else user['password_hash'], user_id)).fetchone()
+            if payload.password or email != user['email']:
+                conn.execute('DELETE FROM xm.sessions WHERE user_id=%s', (user_id,))
+            conn.commit()
+            return public_user(updated)
+    except UniqueViolation:
+        raise HTTPException(409, 'Email sudah terdaftar')

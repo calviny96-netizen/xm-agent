@@ -2,21 +2,22 @@
 import json
 import uuid
 from db import connect
+from tenant import workspace_id
 from parser import parse_message
 from embedding import embed
 from qdrant import upsert, _request, COLLECTION
 
 
 def glossary_values(conn):
-    return {r['alias']: r['canonical'] for r in conn.execute('SELECT * FROM xm.glossary').fetchall()}
+    return {r['alias']: r['canonical'] for r in conn.execute("SELECT * FROM xm.glossary WHERE company_id=current_setting('xm.workspace_id')").fetchall()}
 
 
 def reindex_documents():
     with connect() as conn:
         # Serialize maintenance with imports and other recomputations.
-        conn.execute('SELECT pg_advisory_xact_lock(9042026)')
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(current_setting('xm.workspace_id'), 9042026))")
         glossary = glossary_values(conn)
-        rows = conn.execute("SELECT r.*, d.id document_id, d.qdrant_point_id FROM xm.raw_messages r LEFT JOIN xm.documents d ON d.raw_message_id=r.id WHERE r.company_id='xm' AND r.duplicate_of IS NULL ORDER BY r.id").fetchall()
+        rows = conn.execute("SELECT r.*, d.id document_id, d.qdrant_point_id FROM xm.raw_messages r LEFT JOIN xm.documents d ON d.raw_message_id=r.id WHERE r.company_id=current_setting('xm.workspace_id') AND r.duplicate_of IS NULL ORDER BY r.id").fetchall()
         batch = []
         parsed_cache = {}
         with conn.pipeline() as pipeline:
@@ -45,7 +46,7 @@ def reindex_documents():
                 else:
                     values.update(id=doc_id, raw_message_id=row['id'], import_id=row['import_id'], agent_name=row['agent_name'])
                     conn.execute('INSERT INTO xm.documents ('+','.join(values)+') VALUES ('+','.join(['%s']*len(values))+')', tuple(values.values()))
-                batch.append({'id': str(point_id), 'vector': embed(parsed.normalized_text), 'payload': {'company_id':'xm','postgres_id':str(doc_id),'document_type':parsed.classification,'agent_name':row['agent_name'],'transaction_type':parsed.transaction_type,'categories':parsed.categories,'locations':parsed.locations,'active':True}})
+                batch.append({'id': str(point_id), 'vector': embed(parsed.normalized_text), 'payload': {'company_id':workspace_id(),'postgres_id':str(doc_id),'document_type':parsed.classification,'agent_name':row['agent_name'],'transaction_type':parsed.transaction_type,'categories':parsed.categories,'locations':parsed.locations,'active':True}})
                 if row_number % 2000 == 0: print(f'Reindex {row_number}/{len(rows)} messages',flush=True)
                 if len(batch) >= 128:
                     pipeline.sync()
